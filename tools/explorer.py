@@ -31,7 +31,7 @@ from engine import elements
 from engine.lattice import Lattice, generate_base
 from engine.properties import percolation
 from engine.registry import Registry
-from engine.rng import SplitMix64
+from engine.rng import SplitMix64, mix
 
 # ASCII ramp for the text render of atom types (0 = empty).
 _RAMP = " .:-=+*#%@"
@@ -256,6 +256,119 @@ def cmd_combine(args: argparse.Namespace) -> int:
     return 0
 
 
+def sample_population(
+    reg: Registry, n: int, rng: SplitMix64, *, chain: bool = False
+) -> list:
+    """Generate ``n`` deterministic random combinations and return the child materials.
+
+    Roots are assumed already seeded into ``reg``. With ``chain=True``, each child is
+    added back to the candidate pool so deeper (multi-step) combinations appear — this
+    exercises the recursive part of the material space (spec §7).
+    """
+    pool = reg.all_ids()
+    children = []
+    for _ in range(n):
+        a = pool[rng.randint(0, len(pool))]
+        b = pool[rng.randint(0, len(pool))]
+        child = reg.combine(a, b)
+        children.append(child)
+        if chain:
+            pool.append(child.id)
+    return children
+
+
+def _text_histogram(values, *, bins: int = 20, width: int = 50, lo=None, hi=None) -> str:
+    arr = np.asarray(values, dtype=float)
+    if arr.size == 0:
+        return "  (no data)"
+    lo = float(arr.min()) if lo is None else lo
+    hi = float(arr.max()) if hi is None else hi
+    if hi <= lo:
+        return f"  all values = {lo:.4g}"
+    edges = np.linspace(lo, hi, bins + 1)
+    counts, _ = np.histogram(arr, bins=edges)
+    peak = max(int(counts.max()), 1)
+    lines = []
+    for i, c in enumerate(counts):
+        bar = "#" * int(round(c / peak * width))
+        lines.append(f"  [{edges[i]:8.3g}, {edges[i + 1]:8.3g})  {c:5d} {bar}")
+    return "\n".join(lines)
+
+
+def _stats_line(values) -> str:
+    arr = np.asarray(values, dtype=float)
+    return (
+        f"n={arr.size}  min={arr.min():.4g}  median={np.median(arr):.4g}  "
+        f"mean={arr.mean():.4g}  max={arr.max():.4g}"
+    )
+
+
+def cmd_distribution(args: argparse.Namespace) -> int:
+    """Population view: combine many random pairs and plot property distributions (§7).
+
+    This is the project's central checkpoint — do interesting properties actually emerge?
+    Specifically: is conductivity bimodal around the percolation threshold (so the
+    population lands on *both* sides), and is density a smooth, legible spread?
+    """
+    shape = tuple(args.shape) if args.shape else (64, 64)
+    reg = Registry(universe_seed=args.seed, shape=shape)
+    reg.seed_elements()
+    rng = SplitMix64(mix(args.seed, 0xD15C0))
+    children = sample_population(reg, args.n, rng, chain=args.chain)
+
+    props = sorted(children[0].properties)
+    series = {k: [c.properties[k] for c in children] for k in props}
+
+    print(f"=== distribution over {len(children)} combinations ===")
+    print(f"shape={shape}  universe_seed={args.seed}  chain={args.chain}")
+
+    cond = np.asarray(series["conductivity"])
+    frac_cond = float((cond >= 0.5).mean())
+    print(
+        f"\nconductivity: {frac_cond*100:.1f}% conduct, "
+        f"{(1-frac_cond)*100:.1f}% insulate  "
+        f"(both present => threshold is being crossed)"
+    )
+
+    for k in props:
+        print(f"\n{k}:")
+        print("  " + _stats_line(series[k]))
+        # conductivity is boolean-ish; a histogram of 0/1 isn't illuminating.
+        if k != "conductivity":
+            print(_text_histogram(series[k]))
+
+    if args.plot:
+        out = _plot_distributions(series, Path(args.out))
+        print(f"\nsaved distribution plots -> {out}")
+    return 0
+
+
+def _plot_distributions(series: dict, out_dir: Path) -> Path:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "distributions.png"
+    keys = sorted(series)
+    ncols = 3
+    nrows = (len(keys) + ncols - 1) // ncols
+    fig, axes = plt.subplots(nrows, ncols, figsize=(4 * ncols, 3 * nrows))
+    axes = np.atleast_1d(axes).ravel()
+    for ax, k in zip(axes, keys):
+        ax.hist(series[k], bins=25, color="steelblue", edgecolor="white")
+        ax.set_title(k)
+        ax.grid(alpha=0.2)
+    for ax in axes[len(keys):]:
+        ax.axis("off")
+    fig.suptitle("Property distributions over random combinations")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=120)
+    plt.close(fig)
+    return out_path
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="explorer", description="Materials engine explorer (spec §7)"
@@ -303,6 +416,23 @@ def build_parser() -> argparse.ArgumentParser:
     p_comb.add_argument("--plot", action="store_true", help="save a heatmap of the child")
     p_comb.add_argument("--out", default="out", help="output dir for plots")
     p_comb.set_defaults(func=cmd_combine)
+
+    p_dist = sub.add_parser(
+        "distribution",
+        help="combine many random pairs; show property distributions (the §7 checkpoint)",
+    )
+    p_dist.add_argument("--n", type=int, default=500, help="number of combinations")
+    p_dist.add_argument(
+        "--chain", action="store_true",
+        help="feed children back into the pool for multi-step combinations",
+    )
+    p_dist.add_argument(
+        "--shape", type=int, nargs="+", default=None, help="lattice shape (default 64 64)"
+    )
+    p_dist.add_argument("--seed", type=int, default=0, help="UNIVERSE_SEED (default 0)")
+    p_dist.add_argument("--plot", action="store_true", help="save histogram grid")
+    p_dist.add_argument("--out", default="out", help="output dir for plots")
+    p_dist.set_defaults(func=cmd_distribution)
 
     return p
 

@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Sequence
 
 from . import lattice as lattice_mod
 from .lattice import DEFAULT_SHAPE_2D, Lattice
-from .properties import percolation
+from .properties import percolation, scalar
 from .rng import UNIVERSE_SEED, hash_str, mix
 
 if TYPE_CHECKING:  # avoid import cost / keep engine layering explicit
@@ -68,12 +68,14 @@ def net_spin(lattice: Lattice) -> float:
 def measure_properties(lattice: Lattice) -> dict[str, float]:
     """Run the available extractors on a settled lattice and quantize (spec §4.4, §6.4).
 
-    M1 surfaces what exists today: the legible scalar ``fill_fraction`` and the
-    percolation/conductivity family. M2+ extend this dict (density, magnetism, band gap,
+    M2 surfaces the legible scalars (``density``, ``atomic_mass``, ``fill_fraction``) and
+    the percolation/conductivity family. M3+ extend this dict (magnetism, band gap,
     mechanical) — every value is measured from the lattice, never assigned.
     """
     return {
         "fill_fraction": quantize(lattice.fill_fraction),
+        "atomic_mass": quantize(scalar.mean_atomic_mass(lattice)),
+        "density": quantize(scalar.density(lattice)),
         "conductivity": quantize(float(percolation.conductivity_boolean(lattice))),
         "spanning_fraction": quantize(percolation.spanning_fraction(lattice)),
         "largest_cluster_fraction": quantize(percolation.largest_cluster_fraction(lattice)),

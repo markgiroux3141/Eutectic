@@ -38,7 +38,8 @@ Following the milestones in spec §11.
 
 - [x] **M0 — Foundations**: rng, Lattice, root elements, inspect a single element's lattice.
 - [x] **M1 — Combination pipeline**: `merge` + `relax` + `combine()` + registry; determinism test passing.
-- [~] M2 — Legible properties + first threshold: percolation/conductivity done (de-risk); density next.
+- [x] **M2 — Legible properties + first threshold**: density/mass (`scalar.py`) + percolation/conductivity;
+      explorer `distribution` view confirms conductivity is bimodal around the threshold.
 - [ ] M3 — Emergent properties + rarity (magnetism, superconductivity).
 - [ ] M4 — Remaining properties (band gap, mechanical).
 - [ ] M5 — Machine layer (motor).
@@ -55,6 +56,9 @@ python -m tools.explorer combine iron copper
 
 # See the percolation threshold (the core rarity mechanism)
 python -m tools.explorer percolation-sweep --plot
+
+# Population view: distributions over many random combinations (spec §7 checkpoint)
+python -m tools.explorer distribution --n 500 --plot
 
 # Tests
 pytest

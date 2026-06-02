@@ -48,13 +48,20 @@ DEFAULT_ATOM_TYPES: int = 4
 class Lattice:
     """A settled (or freshly generated) grid of cells.
 
-    Three parallel arrays share the same ``shape``:
+    Parallel arrays share the same ``shape`` (kept vectorized rather than an
+    array-of-structs — spec §3.2):
 
     * ``occupied`` — uint8 {0,1}: is there matter in this cell (fill fraction feeds
       density and percolation).
     * ``atom_type`` — int8: which kind of site; 0 is reserved for "empty". Drives bond
       rules / coupling.
     * ``spin`` — int8 {-1,+1}: Ising spin for magnetism.
+    * ``mass`` — float32: per-cell atomic mass (0 where empty). A root fills its occupied
+      cells with the element's ``atomic_mass``; :func:`merge` carries each parent's mass
+      through its domains, so a combination's mass field reflects its real blend. This is
+      what lets density be *measured* from the structure for combos, not just roots
+      (spec §5.1). Optional at construction: if omitted it defaults to unit mass on
+      occupied cells, which is all synthetic/test lattices need.
 
     Frozen so a Lattice is a value object; transforms return new instances. Arrays are
     not deep-copied on construction — callers should not mutate arrays they hand in.
@@ -63,9 +70,13 @@ class Lattice:
     occupied: np.ndarray
     atom_type: np.ndarray
     spin: np.ndarray
+    mass: np.ndarray | None = None
 
     def __post_init__(self) -> None:
-        shapes = {self.occupied.shape, self.atom_type.shape, self.spin.shape}
+        if self.mass is None:
+            # Backward-compatible default: unit mass on occupied cells.
+            object.__setattr__(self, "mass", self.occupied.astype(np.float32))
+        shapes = {self.occupied.shape, self.atom_type.shape, self.spin.shape, self.mass.shape}
         if len(shapes) != 1:
             raise ValueError(f"lattice arrays disagree on shape: {shapes}")
         if self.dim not in (2, 3):
@@ -98,6 +109,7 @@ class Lattice:
             hash_array(self.occupied),
             hash_array(self.atom_type),
             hash_array(self.spin),
+            hash_array(self.mass),
         )
 
     def copy(self) -> "Lattice":
@@ -106,6 +118,7 @@ class Lattice:
             occupied=self.occupied.copy(),
             atom_type=self.atom_type.copy(),
             spin=self.spin.copy(),
+            mass=self.mass.copy(),
         )
 
 
@@ -115,6 +128,7 @@ def generate_base(
     shape: Sequence[int] = DEFAULT_SHAPE_2D,
     affinities: Mapping[str, float] | None = None,
     n_atom_types: int = DEFAULT_ATOM_TYPES,
+    mass_per_atom: float = 1.0,
 ) -> Lattice:
     """Deterministically generate a base lattice from a seed + affinities (spec §4.1).
 
@@ -163,7 +177,10 @@ def generate_base(
     # net magnetization measurements (occupied mask is applied at measure time too).
     spin = np.where(occupied == 1, spin, 1).astype(np.int8)
 
-    return Lattice(occupied=occupied, atom_type=atom_type, spin=spin)
+    # --- mass: each occupied cell carries the element's atomic mass (spec §5.1) ---
+    mass = (occupied.astype(np.float32) * np.float32(mass_per_atom))
+
+    return Lattice(occupied=occupied, atom_type=atom_type, spin=spin, mass=mass)
 
 
 def _clamp01(x: float) -> float:
@@ -214,7 +231,8 @@ def merge(
     occupied = np.where(take_a, a.occupied, b.occupied).astype(np.uint8)
     atom_type = np.where(take_a, a.atom_type, b.atom_type).astype(np.int8)
     spin = np.where(take_a, a.spin, b.spin).astype(np.int8)
-    return Lattice(occupied=occupied, atom_type=atom_type, spin=spin)
+    mass = np.where(take_a, a.mass, b.mass).astype(np.float32)
+    return Lattice(occupied=occupied, atom_type=atom_type, spin=spin, mass=mass)
 
 
 def _neighbor_spin_sum(spin_field: np.ndarray) -> np.ndarray:
@@ -271,4 +289,9 @@ def relax(
             spin = np.where(update, -spin, spin).astype(np.int8)
 
     spin = np.where(occ, spin, 1).astype(np.int8)
-    return Lattice(occupied=lattice.occupied, atom_type=lattice.atom_type, spin=spin)
+    return Lattice(
+        occupied=lattice.occupied,
+        atom_type=lattice.atom_type,
+        spin=spin,
+        mass=lattice.mass,
+    )

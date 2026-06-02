@@ -47,7 +47,12 @@ class Element:
         reshuffles the whole material space while staying deterministic within a save.
         """
         seed = mix(self.signature, universe_seed)
-        return generate_base(seed, shape=shape, affinities=self.base_affinities)
+        return generate_base(
+            seed,
+            shape=shape,
+            affinities=self.base_affinities,
+            mass_per_atom=self.atomic_mass,
+        )
 
 
 def _sig(element_id: str) -> int:
