@@ -36,9 +36,9 @@ pip install -r requirements.txt
 
 Following the milestones in spec §11.
 
-- [ ] **M0 — Foundations**: rng, Lattice, root elements, inspect a single element's lattice.
-- [ ] M1 — Combination pipeline + determinism test.
-- [ ] M2 — Legible properties + first threshold (density, percolation/conductivity).
+- [x] **M0 — Foundations**: rng, Lattice, root elements, inspect a single element's lattice.
+- [x] **M1 — Combination pipeline**: `merge` + `relax` + `combine()` + registry; determinism test passing.
+- [~] M2 — Legible properties + first threshold: percolation/conductivity done (de-risk); density next.
 - [ ] M3 — Emergent properties + rarity (magnetism, superconductivity).
 - [ ] M4 — Remaining properties (band gap, mechanical).
 - [ ] M5 — Machine layer (motor).
@@ -49,6 +49,12 @@ Following the milestones in spec §11.
 ```powershell
 # Inspect a root element's generated lattice (text + optional plot)
 python -m tools.explorer inspect iron
+
+# Combine two materials and inspect the child
+python -m tools.explorer combine iron copper
+
+# See the percolation threshold (the core rarity mechanism)
+python -m tools.explorer percolation-sweep --plot
 
 # Tests
 pytest

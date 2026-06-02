@@ -3,9 +3,9 @@
 The whole bet of this project is "do interesting properties actually emerge and feel
 good?" — and the explorer is how we *see* the property space before trusting it.
 
-M0 scope: ``inspect`` and ``list`` only — render/inspect a single element's generated
-lattice (text always; optional matplotlib heatmap). Distribution plots over random
-combinations arrive once ``combine()`` + properties exist (M2+).
+Commands: ``list`` / ``inspect`` (single element) and ``percolation-sweep`` (the
+threshold experiment) since M0; ``combine`` (combine two materials and inspect the child)
+since M1. Population distribution plots arrive in M2.
 
 Usage::
 
@@ -14,6 +14,8 @@ Usage::
     python -m tools.explorer inspect iron --plot          # save a heatmap PNG
     python -m tools.explorer inspect iron --shape 32 32    # smaller lattice
     python -m tools.explorer inspect iron --seed 7         # alternate universe seed
+    python -m tools.explorer combine iron copper           # combine two roots
+    python -m tools.explorer combine iron copper --plot
 """
 
 from __future__ import annotations
@@ -28,6 +30,7 @@ import numpy as np
 from engine import elements
 from engine.lattice import Lattice, generate_base
 from engine.properties import percolation
+from engine.registry import Registry
 from engine.rng import SplitMix64
 
 # ASCII ramp for the text render of atom types (0 = empty).
@@ -215,6 +218,44 @@ def _plot_sweep(rows, out_dir: Path) -> Path:
     return out_path
 
 
+def _print_properties(props: dict) -> None:
+    for key in sorted(props):
+        print(f"  {key:24s} {props[key]}")
+
+
+def cmd_combine(args: argparse.Namespace) -> int:
+    """Combine two materials and inspect the child (spec §4)."""
+    shape = tuple(args.shape) if args.shape else (64, 64)
+    reg = Registry(universe_seed=args.seed, shape=shape)
+    reg.add_element(args.a)
+    reg.add_element(args.b)
+    child = reg.combine(args.a, args.b)
+
+    print(f"=== combine({args.a}, {args.b}) | universe_seed={args.seed} ===")
+    print(f"child id: {child.id}")
+    print(f"lineage:  {child.lineage}")
+    print(f"structural_signature={child.lattice.structural_signature():#018x}")
+    print("properties:")
+    _print_properties(child.properties)
+    print()
+    print("parent property comparison:")
+    a_mat, b_mat = reg.get(args.a), reg.get(args.b)
+    keys = sorted(child.properties)
+    print(f"  {'property':24s} {args.a:>12s} {args.b:>12s} {'child':>12s}")
+    for k in keys:
+        print(
+            f"  {k:24s} {a_mat.properties[k]:>12} "
+            f"{b_mat.properties[k]:>12} {child.properties[k]:>12}"
+        )
+    print()
+    print(_ascii_render(child.lattice))
+
+    if args.plot:
+        out = _plot(child.lattice, child.id, Path(args.out))
+        print(f"\nsaved heatmap -> {out}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="explorer", description="Materials engine explorer (spec §7)"
@@ -251,6 +292,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_sweep.add_argument("--plot", action="store_true", help="save a matplotlib plot")
     p_sweep.add_argument("--out", default="out", help="output dir for plots")
     p_sweep.set_defaults(func=cmd_percolation_sweep)
+
+    p_comb = sub.add_parser("combine", help="combine two materials and inspect the child")
+    p_comb.add_argument("a", help="first element/material id")
+    p_comb.add_argument("b", help="second element/material id")
+    p_comb.add_argument(
+        "--shape", type=int, nargs="+", default=None, help="lattice shape (default 64 64)"
+    )
+    p_comb.add_argument("--seed", type=int, default=0, help="UNIVERSE_SEED (default 0)")
+    p_comb.add_argument("--plot", action="store_true", help="save a heatmap of the child")
+    p_comb.add_argument("--out", default="out", help="output dir for plots")
+    p_comb.set_defaults(func=cmd_combine)
 
     return p
 
