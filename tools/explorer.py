@@ -4,8 +4,9 @@ The whole bet of this project is "do interesting properties actually emerge and 
 good?" — and the explorer is how we *see* the property space before trusting it.
 
 Commands: ``list`` / ``inspect`` (single element) and ``percolation-sweep`` (the
-threshold experiment) since M0; ``combine`` (combine two materials and inspect the child)
-since M1. Population distribution plots arrive in M2.
+threshold experiment) since M0; ``combine`` since M1; ``distribution`` (population view)
+since M2; ``magnetism-sweep`` (Ising transition) and ``connectivity-sweep`` (higher-order
+percolation transitions behind superconductivity) since M3.
 
 Usage::
 
@@ -15,7 +16,9 @@ Usage::
     python -m tools.explorer inspect iron --shape 32 32    # smaller lattice
     python -m tools.explorer inspect iron --seed 7         # alternate universe seed
     python -m tools.explorer combine iron copper           # combine two roots
-    python -m tools.explorer combine iron copper --plot
+    python -m tools.explorer percolation-sweep --plot      # conductivity threshold
+    python -m tools.explorer magnetism-sweep --plot        # magnetism critical transition
+    python -m tools.explorer distribution --n 500 --plot   # property distributions (§7)
 """
 
 from __future__ import annotations
@@ -28,8 +31,14 @@ from typing import Sequence
 import numpy as np
 
 from engine import elements
-from engine.lattice import Lattice, generate_base
-from engine.properties import percolation
+from engine.lattice import (
+    RELAX_STEPS,
+    RELAX_TEMPERATURE,
+    Lattice,
+    generate_base,
+    relax,
+)
+from engine.properties import ising, percolation
 from engine.registry import Registry
 from engine.rng import SplitMix64, mix
 
@@ -218,6 +227,150 @@ def _plot_sweep(rows, out_dir: Path) -> Path:
     return out_path
 
 
+def cmd_magnetism_sweep(args: argparse.Namespace) -> int:
+    """Sweep the magnetic moment and measure spontaneous magnetization (the Ising analog).
+
+    The companion to ``percolation-sweep``: it tests the magnetism critical claim (spec
+    §5.5) *without* needing combine(). Each lattice starts fully aligned (symmetry already
+    broken) at a high fill (so percolation isn't the limiter), with a uniform moment ``m``
+    setting the structural coupling ``J = J0 * m^2``. We then relax at the engine's fixed
+    temperature and measure ``|M|``: below the critical moment thermal fluctuations destroy
+    the order (``|M| -> 0``); above it the order survives (``|M| -> 1``). A sharp rise is
+    the critical transition.
+    """
+    shape = tuple(args.shape) if args.shape else (64, 64)
+    moments = np.linspace(args.lo, args.hi, args.steps)
+    trials = args.trials
+
+    m_c = float(np.sqrt(0.4407 * RELAX_TEMPERATURE))  # pure-lattice estimate; dilution shifts it up
+    print(
+        f"shape={shape}  trials/point={trials}  T={RELAX_TEMPERATURE}  steps={RELAX_STEPS}  "
+        f"fill={args.fill}  (pure-lattice m_c ~ {m_c:.3f})"
+    )
+    print(f"{'moment':>7}  {'|M|':>6}  bar")
+    rows = []
+    for moment in moments:
+        total = 0.0
+        for t in range(trials):
+            seed = _seed_for(float(moment), t, args.seed)
+            lat = _uniform_moment_lattice(seed, shape, float(moment), args.fill)
+            settled = relax(lat, mix(seed, 0x52))
+            total += ising.magnetism(settled)
+        mean_mag = total / trials
+        bar = "#" * int(round(mean_mag * 40))
+        rows.append((float(moment), mean_mag))
+        print(f"{moment:7.3f}  {mean_mag:6.3f}  {bar}")
+
+    if args.plot:
+        out = _plot_magnetism_sweep(rows, m_c, Path(args.out))
+        print(f"\nsaved sweep plot -> {out}")
+    return 0
+
+
+def _uniform_moment_lattice(
+    seed: int, shape: tuple[int, ...], moment: float, fill: float
+) -> Lattice:
+    """A high-fill lattice with uniform moment, spins started fully aligned.
+
+    Aligned start + high fill isolates the Ising transition from percolation: the only
+    control parameter is the moment (hence the coupling). Measures whether order *survives*
+    relaxation at coupling ``J0 * moment^2``.
+    """
+    gen = SplitMix64(seed).numpy_generator()
+    occupied = (gen.random(shape) < fill).astype(np.uint8)
+    atom_type = np.where(occupied == 1, 1, 0).astype(np.int8)
+    spin = np.ones(shape, dtype=np.int8)  # symmetry broken up
+    moment_field = (occupied.astype(np.float32) * np.float32(moment))
+    return Lattice(occupied=occupied, atom_type=atom_type, spin=spin, moment=moment_field)
+
+
+def _plot_magnetism_sweep(rows, m_c: float, out_dir: Path) -> Path:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "magnetism_sweep.png"
+    moments = [r[0] for r in rows]
+    mag = [r[1] for r in rows]
+    fig, ax = plt.subplots(figsize=(7, 5))
+    ax.plot(moments, mag, "o-", label="|M| (settled)")
+    ax.axvline(m_c, color="r", ls=":", label=f"pure-lattice m_c ≈ {m_c:.3f}")
+    ax.set_xlabel("magnetic moment (coupling = J0·moment²)")
+    ax.set_ylabel("|net magnetization|")
+    ax.set_title("Magnetism critical transition (Ising)")
+    ax.legend()
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=120)
+    plt.close(fig)
+    return out_path
+
+
+def cmd_connectivity_sweep(args: argparse.Namespace) -> int:
+    """Sweep fill and measure P(min-cut >= k) for several k -- the higher-order transitions.
+
+    This is the evidence that superconductivity rides a *genuine* transition (spec §5.4),
+    not a tuned cut on a smooth tail. k-edge-connectivity percolation has its own critical
+    density p_k: a backbone with k edge-disjoint spanning paths first appears at p_k, and
+    p_k rises with k (k=1 reproduces the ordinary site percolation point p_c ~ 0.593). Each
+    curve should be a sharp step at its own p_k, the steps marching right as k grows.
+    """
+    from engine.properties import conductance as conductance_mod
+
+    shape = tuple(args.shape) if args.shape else (64, 64)
+    ks = sorted(args.ks)
+    fills = np.linspace(args.lo, args.hi, args.steps)
+    trials = args.trials
+
+    print(f"shape={shape}  trials/point={trials}  (site p_c ~ 0.5927)")
+    print(f"{'fill':>6}  " + "  ".join(f"k>={k:<2d}" for k in ks))
+    rows = []
+    for fill in fills:
+        counts = {k: 0 for k in ks}
+        for t in range(trials):
+            seed = SplitMix64(_seed_for(float(fill), t, args.seed)).next_u64()
+            lat = _lattice_at_fill(seed, shape, float(fill))
+            w = max(
+                conductance_mod._bottleneck_width_axis(lat, ax) for ax in range(lat.dim)
+            )
+            for k in ks:
+                counts[k] += int(w >= k)
+        probs = {k: counts[k] / trials for k in ks}
+        rows.append((float(fill), probs))
+        print(f"{fill:6.3f}  " + "  ".join(f"{probs[k]:4.2f}" for k in ks))
+
+    if args.plot:
+        out = _plot_connectivity_sweep(rows, ks, Path(args.out))
+        print(f"\nsaved sweep plot -> {out}")
+    return 0
+
+
+def _plot_connectivity_sweep(rows, ks, out_dir: Path) -> Path:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "connectivity_sweep.png"
+    fills = [r[0] for r in rows]
+    fig, ax = plt.subplots(figsize=(7, 5))
+    for k in ks:
+        ax.plot(fills, [r[1][k] for r in rows], "o-", label=f"P(min-cut ≥ {k})")
+    ax.axvline(0.5927, color="r", ls=":", label="site p_c ≈ 0.5927")
+    ax.set_xlabel("fill fraction")
+    ax.set_ylabel("probability")
+    ax.set_title("Higher-order (k-edge-connectivity) percolation transitions")
+    ax.legend()
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=120)
+    plt.close(fig)
+    return out_path
+
+
 def _print_properties(props: dict) -> None:
     for key in sorted(props):
         print(f"  {key:24s} {props[key]}")
@@ -330,11 +483,35 @@ def cmd_distribution(args: argparse.Namespace) -> int:
         f"(both present => threshold is being crossed)"
     )
 
+    # Magnetism transition (spec §5.5): a disordered mode near 0 and an ordered tail.
+    mag = np.asarray(series["magnetism"])
+    print(
+        f"magnetism:    {(mag < 0.15).mean()*100:.1f}% disordered (<0.15), "
+        f"{(mag > 0.5).mean()*100:.1f}% ordered (>0.5), "
+        f"{((mag >= 0.15) & (mag <= 0.5)).mean()*100:.1f}% in-between "
+        f"(empty middle => critical transition)"
+    )
+
+    # Superconductivity (spec §5.4): spanning AND k-edge-connected (loss-free backbone).
+    from engine.properties.conductance import required_connectivity
+
+    sc = np.asarray(series["superconductor"])
+    n_sc = int((sc > 0.5).sum())
+    # Every superconductor must also be a conductor (the double threshold).
+    sc_conducts = bool(((sc > 0.5) <= (cond >= 0.5)).all())
+    k = required_connectivity(shape)
+    print(
+        f"superconductors: {n_sc}/{len(children)} ({sc.mean()*100:.2f}%) "
+        f"-- thin tail: spans AND edge-connectivity >= {k} (p_k > p_c); "
+        f"all-also-conduct={sc_conducts}"
+    )
+
+    # 0/1 boolean series: a histogram of two spikes isn't illuminating.
+    boolean_keys = {"conductivity", "superconductor"}
     for k in props:
         print(f"\n{k}:")
         print("  " + _stats_line(series[k]))
-        # conductivity is boolean-ish; a histogram of 0/1 isn't illuminating.
-        if k != "conductivity":
+        if k not in boolean_keys:
             print(_text_histogram(series[k]))
 
     if args.plot:
@@ -405,6 +582,45 @@ def build_parser() -> argparse.ArgumentParser:
     p_sweep.add_argument("--plot", action="store_true", help="save a matplotlib plot")
     p_sweep.add_argument("--out", default="out", help="output dir for plots")
     p_sweep.set_defaults(func=cmd_percolation_sweep)
+
+    p_msweep = sub.add_parser(
+        "magnetism-sweep",
+        help="sweep magnetic moment; measure |M| (the Ising critical-transition experiment)",
+    )
+    p_msweep.add_argument("--lo", type=float, default=0.30, help="min moment")
+    p_msweep.add_argument("--hi", type=float, default=1.30, help="max moment")
+    p_msweep.add_argument("--steps", type=int, default=15, help="number of moment points")
+    p_msweep.add_argument("--trials", type=int, default=20, help="lattices per moment point")
+    p_msweep.add_argument(
+        "--fill", type=float, default=0.85,
+        help="fill fraction (high, to isolate the Ising transition from percolation)",
+    )
+    p_msweep.add_argument(
+        "--shape", type=int, nargs="+", default=None, help="lattice shape (default 64 64)"
+    )
+    p_msweep.add_argument("--seed", type=int, default=0, help="UNIVERSE_SEED (default 0)")
+    p_msweep.add_argument("--plot", action="store_true", help="save a matplotlib plot")
+    p_msweep.add_argument("--out", default="out", help="output dir for plots")
+    p_msweep.set_defaults(func=cmd_magnetism_sweep)
+
+    p_csweep = sub.add_parser(
+        "connectivity-sweep",
+        help="sweep fill; P(min-cut>=k) for several k (higher-order percolation transitions)",
+    )
+    p_csweep.add_argument("--lo", type=float, default=0.45, help="min fill fraction")
+    p_csweep.add_argument("--hi", type=float, default=0.85, help="max fill fraction")
+    p_csweep.add_argument("--steps", type=int, default=17, help="number of fill points")
+    p_csweep.add_argument("--trials", type=int, default=30, help="lattices per fill point")
+    p_csweep.add_argument(
+        "--ks", type=int, nargs="+", default=[1, 2, 3, 5, 8], help="connectivity levels k"
+    )
+    p_csweep.add_argument(
+        "--shape", type=int, nargs="+", default=None, help="lattice shape (default 64 64)"
+    )
+    p_csweep.add_argument("--seed", type=int, default=0, help="UNIVERSE_SEED (default 0)")
+    p_csweep.add_argument("--plot", action="store_true", help="save a matplotlib plot")
+    p_csweep.add_argument("--out", default="out", help="output dir for plots")
+    p_csweep.set_defaults(func=cmd_connectivity_sweep)
 
     p_comb = sub.add_parser("combine", help="combine two materials and inspect the child")
     p_comb.add_argument("a", help="first element/material id")

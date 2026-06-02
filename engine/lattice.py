@@ -32,13 +32,27 @@ DEFAULT_SHAPE_3D: tuple[int, int, int] = (16, 16, 16)
 
 # --- relaxation defaults (spec §4.3) --------------------------------------------------
 # A short, FIXED number of settling sweeps -> identical settled lattice every time.
-RELAX_STEPS: int = 8
-# Ising temperature. 2D square-lattice T_c ~ 2.269 (J=1); sitting just below it lets
-# ordered domains form without freezing the whole lattice into one block. Tuned for the
-# magnetism transition in M3.
-RELAX_TEMPERATURE: float = 2.0
+RELAX_STEPS: int = 12
+# Ising temperature. Sat below the pure-lattice T_c (~2.269 at J=1), but these lattices
+# are *site-diluted* (~60% fill), which suppresses the effective T_c toward the
+# percolation point. T=1.0 is tuned so strongly-coupled (high-moment, iron-family) regions
+# robustly order even when dilute, while weakly-coupled regions thermalise to disorder —
+# giving the clean magnetism transition this milestone is after (spec §5.5).
+RELAX_TEMPERATURE: float = 1.0
 # Default domain length-scale for merge: larger -> bigger contiguous parent domains.
 MERGE_DOMAIN_SCALE: float = 2.0
+
+# --- magnetism / Ising coupling (spec §5.5) -------------------------------------------
+# Global exchange constant. Bond coupling is J = EXCHANGE_J0 * moment_i * moment_j, so a
+# bond between two unit-moment cells has coupling EXCHANGE_J0.
+EXCHANGE_J0: float = 1.0
+# Per-cell magnetic moment is mapped linearly from an element's ``magnetic_tendency`` in
+# [0,1] into [MOMENT_LO, MOMENT_HI]. The critical moment (where J0*m^2/T crosses the 2D
+# Ising point J/T ~ 0.4407, i.e. m_c = sqrt(0.4407*T/J0) ~ 0.94 at the defaults) is tuned
+# to fall *between* the ferromagnets (iron/cobalt/nickel, tendency >= 0.78 -> m >= 1.06)
+# and everything else (tendency <= 0.40 -> m <= 0.64) so the transition is legible.
+MOMENT_LO: float = 0.20
+MOMENT_HI: float = 1.30
 
 # Number of distinct atom "kinds" a base lattice draws from. Drives bond rules later.
 DEFAULT_ATOM_TYPES: int = 4
@@ -62,6 +76,14 @@ class Lattice:
       what lets density be *measured* from the structure for combos, not just roots
       (spec §5.1). Optional at construction: if omitted it defaults to unit mass on
       occupied cells, which is all synthetic/test lattices need.
+    * ``moment`` — float32: per-cell magnetic moment (0 where empty). The structural
+      source of spin coupling: :func:`relax` couples neighbours by ``J0 * moment_i *
+      moment_j``, so high-moment cells (iron-family) order while low-moment ones (copper)
+      stay thermally disordered (spec §5.5). A root fills its occupied cells from the
+      element's ``magnetic_tendency``; :func:`merge` carries it through domains like mass.
+      This is what makes magnetism a *measured* phase transition rather than an assigned
+      number. Optional at construction; if omitted it defaults to unit moment on occupied
+      cells (uniform-coupling Ising, all synthetic/test lattices need).
 
     Frozen so a Lattice is a value object; transforms return new instances. Arrays are
     not deep-copied on construction — callers should not mutate arrays they hand in.
@@ -71,12 +93,22 @@ class Lattice:
     atom_type: np.ndarray
     spin: np.ndarray
     mass: np.ndarray | None = None
+    moment: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         if self.mass is None:
             # Backward-compatible default: unit mass on occupied cells.
             object.__setattr__(self, "mass", self.occupied.astype(np.float32))
-        shapes = {self.occupied.shape, self.atom_type.shape, self.spin.shape, self.mass.shape}
+        if self.moment is None:
+            # Backward-compatible default: unit moment on occupied cells (uniform coupling).
+            object.__setattr__(self, "moment", self.occupied.astype(np.float32))
+        shapes = {
+            self.occupied.shape,
+            self.atom_type.shape,
+            self.spin.shape,
+            self.mass.shape,
+            self.moment.shape,
+        }
         if len(shapes) != 1:
             raise ValueError(f"lattice arrays disagree on shape: {shapes}")
         if self.dim not in (2, 3):
@@ -110,6 +142,7 @@ class Lattice:
             hash_array(self.atom_type),
             hash_array(self.spin),
             hash_array(self.mass),
+            hash_array(self.moment),
         )
 
     def copy(self) -> "Lattice":
@@ -119,6 +152,7 @@ class Lattice:
             atom_type=self.atom_type.copy(),
             spin=self.spin.copy(),
             mass=self.mass.copy(),
+            moment=self.moment.copy(),
         )
 
 
@@ -177,10 +211,16 @@ def generate_base(
     # net magnetization measurements (occupied mask is applied at measure time too).
     spin = np.where(occupied == 1, spin, 1).astype(np.int8)
 
+    # --- moment: each occupied cell's magnetic moment, from magnetic_tendency (spec §5.5).
+    # This is the structural source of spin coupling in relax(); a high-moment element
+    # (iron) orders, a low-moment one (copper) stays disordered. Empty cells carry 0.
+    moment_val = MOMENT_LO + (MOMENT_HI - MOMENT_LO) * _clamp01(magnetic)
+    moment = (occupied.astype(np.float32) * np.float32(moment_val))
+
     # --- mass: each occupied cell carries the element's atomic mass (spec §5.1) ---
     mass = (occupied.astype(np.float32) * np.float32(mass_per_atom))
 
-    return Lattice(occupied=occupied, atom_type=atom_type, spin=spin, mass=mass)
+    return Lattice(occupied=occupied, atom_type=atom_type, spin=spin, mass=mass, moment=moment)
 
 
 def _clamp01(x: float) -> float:
@@ -232,15 +272,22 @@ def merge(
     atom_type = np.where(take_a, a.atom_type, b.atom_type).astype(np.int8)
     spin = np.where(take_a, a.spin, b.spin).astype(np.int8)
     mass = np.where(take_a, a.mass, b.mass).astype(np.float32)
-    return Lattice(occupied=occupied, atom_type=atom_type, spin=spin, mass=mass)
+    moment = np.where(take_a, a.moment, b.moment).astype(np.float32)
+    return Lattice(
+        occupied=occupied, atom_type=atom_type, spin=spin, mass=mass, moment=moment
+    )
 
 
-def _neighbor_spin_sum(spin_field: np.ndarray) -> np.ndarray:
-    """Sum of face-neighbour values for every cell (periodic boundary, deterministic)."""
-    total = np.zeros(spin_field.shape, dtype=np.int32)
-    for axis in range(spin_field.ndim):
-        total += np.roll(spin_field, 1, axis=axis)
-        total += np.roll(spin_field, -1, axis=axis)
+def _neighbor_sum(field: np.ndarray) -> np.ndarray:
+    """Sum of face-neighbour values for every cell (periodic boundary, deterministic).
+
+    Accumulates in float64 so it works for both the integer spin field and the
+    moment-weighted (float) field used by the structural Ising coupling.
+    """
+    total = np.zeros(field.shape, dtype=np.float64)
+    for axis in range(field.ndim):
+        total += np.roll(field, 1, axis=axis)
+        total += np.roll(field, -1, axis=axis)
     return total
 
 
@@ -250,12 +297,21 @@ def relax(
     *,
     steps: int = RELAX_STEPS,
     temperature: float = RELAX_TEMPERATURE,
-    coupling: float = 1.0,
+    coupling: float = EXCHANGE_J0,
 ) -> Lattice:
-    """Settle the lattice's spins via deterministic Metropolis dynamics (spec §4.3).
+    """Settle the lattice's spins via deterministic Metropolis dynamics (spec §4.3, §5.5).
 
-    This is where emergence happens: below the critical temperature, spins spontaneously
-    align into ordered domains; the magnetism extractor (M3) reads that order out.
+    This is where emergence happens: where the structural coupling is strong enough,
+    spins spontaneously align into ordered domains; the magnetism extractor (M3) reads
+    that order out.
+
+    **The coupling is derived from structure, not assigned.** Each bond's exchange is
+    ``J_ij = coupling * moment_i * moment_j`` (separable, so the vectorised update stays a
+    one-liner). High-moment cells (iron-family) couple strongly and order; low-moment
+    cells (copper) couple weakly and stay thermally disordered at ``temperature``. Because
+    relaxation and the :func:`engine.properties.ising.magnetism` measurement both read the
+    same ``moment`` field, the settled order and the measured magnetisation agree (spec
+    §5.5). With the default unit-moment field this reduces to a uniform-coupling Ising.
 
     Determinism (spec §6) is guaranteed by three things working together:
 
@@ -264,12 +320,15 @@ def relax(
     * the checkerboard split means no two simultaneously-updated cells are neighbours, so
       the vectorised update is exactly equivalent to a fixed sequential sweep.
 
-    Only ``spin`` is relaxed; ``occupied``/``atom_type`` (and hence density and
-    percolation) are left as :func:`merge` produced them. Empty cells carry no spin and
-    are pinned to +1 by convention so they don't bias magnetisation measurements.
+    Only ``spin`` is relaxed; ``occupied``/``atom_type``/``mass``/``moment`` (and hence
+    density and percolation) are left as :func:`merge` produced them. Empty cells carry no
+    spin and are pinned to +1 by convention so they don't bias magnetisation measurements.
     """
     occ = lattice.occupied.astype(bool)
     spin = lattice.spin.astype(np.int8).copy()
+    # Effective moment: the structural coupling weight, zero on empty cells so they couple
+    # to nothing and never flip.
+    m = np.asarray(lattice.moment, dtype=np.float64) * occ
     gen = SplitMix64(seed).numpy_generator()
 
     # Two-colour (checkerboard) masks: parity of the summed coordinates.
@@ -278,10 +337,10 @@ def relax(
 
     for _ in range(steps):
         for color_mask in colors:
-            field = (spin.astype(np.int32)) * occ  # empty neighbours contribute 0
-            h = _neighbor_spin_sum(field)
-            # Energy change on flipping s -> -s for E = -J * sum_<ij> s_i s_j.
-            delta_e = 2.0 * coupling * spin * h
+            # Local field h_i = sum_j (m_j * s_j); with J_ij = J0*m_i*m_j the energy change
+            # on flipping s_i -> -s_i is dE_i = 2 * J0 * s_i * m_i * h_i.
+            h = _neighbor_sum(m * spin)
+            delta_e = 2.0 * coupling * spin * m * h
             r = gen.random(lattice.shape)
             # exponent capped at 0 so dE<=0 never overflows exp; those flip unconditionally.
             accept = (delta_e <= 0) | (r < np.exp(np.minimum(-delta_e / temperature, 0.0)))
@@ -294,4 +353,5 @@ def relax(
         atom_type=lattice.atom_type,
         spin=spin,
         mass=lattice.mass,
+        moment=lattice.moment,
     )

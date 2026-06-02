@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Sequence
 
 from . import lattice as lattice_mod
 from .lattice import DEFAULT_SHAPE_2D, Lattice
-from .properties import percolation, scalar
+from .properties import conductance, ising, percolation, scalar
 from .rng import UNIVERSE_SEED, hash_str, mix
 
 if TYPE_CHECKING:  # avoid import cost / keep engine layering explicit
@@ -35,6 +35,9 @@ QUANT_DECIMALS: int = 4
 # Sub-seed salts so merge and relax draw from independent streams off the same base seed.
 _MERGE_SALT = 0x4D  # 'M'
 _RELAX_SALT = 0x52  # 'R'
+# Roots are settled too (a material *is* a settled lattice, spec §1): magnetism must be
+# measured from relaxed spins, or a down-biased non-magnet (copper) would read as ordered.
+_ROOT_RELAX_SALT = 0x45  # 'E'
 
 
 def quantize(x: float) -> float:
@@ -69,10 +72,11 @@ def measure_properties(lattice: Lattice) -> dict[str, float]:
     """Run the available extractors on a settled lattice and quantize (spec §4.4, §6.4).
 
     M2 surfaces the legible scalars (``density``, ``atomic_mass``, ``fill_fraction``) and
-    the percolation/conductivity family. M3+ extend this dict (magnetism, band gap,
-    mechanical) — every value is measured from the lattice, never assigned.
+    the percolation/conductivity family. M3 adds magnetism (Ising) and the
+    resistance/superconductivity family (Laplacian + min-cut). Every value is measured
+    from the lattice, never assigned. M4+ extend further (band gap, mechanical).
     """
-    return {
+    props = {
         "fill_fraction": quantize(lattice.fill_fraction),
         "atomic_mass": quantize(scalar.mean_atomic_mass(lattice)),
         "density": quantize(scalar.density(lattice)),
@@ -80,7 +84,12 @@ def measure_properties(lattice: Lattice) -> dict[str, float]:
         "spanning_fraction": quantize(percolation.spanning_fraction(lattice)),
         "largest_cluster_fraction": quantize(percolation.largest_cluster_fraction(lattice)),
         "net_spin": quantize(net_spin(lattice)),
+        "magnetism": quantize(ising.magnetism(lattice)),
     }
+    # Resistance / superconductivity: one per-axis solve, several derived values (§5.3-5.4).
+    for key, value in conductance.measure(lattice).items():
+        props[key] = quantize(value)
+    return props
 
 
 def derive_id(parent_ids: Sequence[str], universe_seed: int = UNIVERSE_SEED) -> str:
@@ -98,6 +107,9 @@ def from_element(
 ) -> Material:
     """Build a root material from an element (its id *is* the element id)."""
     lat = element.lattice(shape=shape, universe_seed=universe_seed)
+    # Settle the spins before measuring (spec §1, §4.3): a root is a settled lattice too.
+    relax_seed = mix(lat.structural_signature(), universe_seed, _ROOT_RELAX_SALT)
+    lat = lattice_mod.relax(lat, relax_seed)
     return Material(
         id=element.id,
         lattice=lat,

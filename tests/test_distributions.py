@@ -8,6 +8,8 @@ Kept on a modest lattice / sample size so it runs in CI quickly; the threshold i
 clearly resolved at this size.
 """
 
+from functools import lru_cache
+
 import numpy as np
 
 from engine.registry import Registry
@@ -15,10 +17,13 @@ from engine.rng import SplitMix64, mix
 from tools.explorer import sample_population
 
 SHAPE = (40, 40)
-N = 120
+N = 200
 
 
+@lru_cache(maxsize=None)
 def _population(universe_seed: int = 0):
+    # Memoized: the population is a deterministic function of the seed, so the several
+    # tests that share a seed reuse one (relatively expensive) build instead of recomputing.
     reg = Registry(universe_seed=universe_seed, shape=SHAPE)
     reg.seed_elements()
     rng = SplitMix64(mix(universe_seed, 0xD15C0))
@@ -58,6 +63,63 @@ def test_density_is_a_legible_spread():
     assert dens.min() > 0
     # Heavy and light blends should differ by well over an order of magnitude.
     assert dens.max() / dens.min() > 10
+
+
+def test_magnetism_shows_a_critical_transition():
+    """Magnetism is bimodal: a large disordered mode at ~0 and a smaller ordered tail.
+
+    The signature of the Ising critical transition (spec §5.5) is the same as percolation's:
+    a thin *middle*. Most combinations have no connected high-moment backbone (disordered);
+    a minority do and align spontaneously. Few sit in the partially-ordered in-between.
+    """
+    children = _population()
+    mag = np.array([c.properties["magnetism"] for c in children])
+    disordered = (mag < 0.15).mean()      # no spontaneous alignment
+    ordered = (mag > 0.5).mean()          # clear ferromagnet
+    middle = ((mag >= 0.15) & (mag <= 0.5)).mean()
+    assert disordered > 0.4, f"expected a dominant disordered mode, got {disordered:.2f}"
+    assert ordered > 0.05, f"expected an ordered tail, got {ordered:.2f}"
+    # The transition's tell-tale: the partially-ordered middle is the thinnest region.
+    assert middle < disordered and middle < (disordered + ordered), (
+        f"no gap: disordered={disordered:.2f} middle={middle:.2f} ordered={ordered:.2f}"
+    )
+
+
+def test_superconductors_are_a_thin_rare_tail():
+    """Superconductors are rare and *conditional on* conducting (the §5.4 double threshold).
+
+    The rarity is honest: superconductivity requires the backbone to span (threshold p_c)
+    AND be k-edge-connected (threshold p_k > p_c) — two real percolation transitions, so
+    requiring the second on top of the first yields a thin tail. We assert the tail is
+    non-empty but thin, that every superconductor also conducts (the second threshold sits
+    on the first), and that superconductors carry the high edge-connectivity that defines
+    them. (We do NOT claim "no probability dial" — the redundancy level k is the one knob;
+    see conductance.py / README "M3 findings".)
+    """
+    from engine.properties.conductance import required_connectivity
+
+    children = _population()
+    sc = np.array([c.properties["superconductor"] for c in children])
+    cond = np.array([c.properties["conductivity"] for c in children])
+    ec = np.array([c.properties["edge_connectivity"] for c in children])
+    frac_sc = (sc > 0.5).mean()
+    assert 0.0 < frac_sc < 0.10, f"superconductors not a thin rare tail: {frac_sc:.3f}"
+    # Double threshold: every superconductor is also a conductor.
+    assert ((sc > 0.5) <= (cond >= 0.5)).all(), "a superconductor that does not conduct"
+    # Superconductors are rarer than plain conductors (a tail *within* the conductors).
+    assert frac_sc < (cond >= 0.5).mean()
+    # The flag means exactly "edge-connectivity >= required k" — the topological criterion.
+    k = required_connectivity(SHAPE)
+    assert ((sc > 0.5) == (ec >= k)).all(), "superconductor flag != k-edge-connectivity"
+
+
+def test_continuous_conductivity_tracks_boolean():
+    """1/resistance is >0 exactly when the boolean percolation says it spans (consistency)."""
+    children = _population()
+    cc = np.array([c.properties["conductivity_continuous"] for c in children])
+    cond = np.array([c.properties["conductivity"] for c in children])
+    # Continuous conductivity is positive iff a spanning cluster exists.
+    assert ((cc > 0) == (cond >= 0.5)).all()
 
 
 def test_population_is_deterministic():
