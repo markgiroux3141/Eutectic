@@ -66,3 +66,26 @@ def domain_wall_density(lattice: Lattice) -> float:
         bonds += int(both.sum())
         walls += int((both & disagree).sum())
     return walls / bonds if bonds else 0.0
+
+
+def positional_order(lattice: Lattice) -> float:
+    """Staggered (sublattice) density of the occupancy field — the **melting order parameter** (M5).
+
+    ``ψ = |(1/N)·Σ_i (−1)^(Σ coords)·(2·occupied_i − 1)|`` over the whole lattice: +1 for a
+    perfect checkerboard crystal (one sublattice full, the other empty), ~0 for a positionally
+    disordered (molten/random) arrangement. This is the order parameter whose collapse *is*
+    melting — measured on the symmetry-broken occupancy ensemble it collapses at ``T_m`` while
+    the mean density stays at ½ (see :func:`engine.thermal.sample_occupancy_ensemble`). The
+    spin twin is :func:`magnetism`; this measures *where the atoms sit*, not *which way they
+    point*.
+
+    NB it is a **global** order parameter: like net ``|M|`` for spins, two opposite anti-phase
+    crystalline domains cancel in ψ, so it is *not* a good readout of a crystallising process
+    started from disorder (the cooling-rate → grain-size signal is weak here — non-conserved
+    checkerboard order heals fast; the robust process readout is **density** under a pressure
+    schedule, see the process layer). Pure ``Lattice -> float``, never assigned (spec §1). In
+    ``[0, 1]``.
+    """
+    n = (lattice.occupied == 1).astype(np.float64)
+    sign = (np.indices(lattice.shape).sum(axis=0) % 2 * 2 - 1).astype(np.float64)
+    return abs(float((sign * (2.0 * n - 1.0)).mean()))

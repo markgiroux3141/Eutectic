@@ -133,3 +133,36 @@ def test_process_changes_a_combined_material():
     field_cooled = combine(a, b, process=proc.field_cool(budget=120))
     assert default.id == field_cooled.id  # same lineage/id (process is not part of identity)
     assert field_cooled.properties["magnetism"] > default.properties["magnetism"]
+
+
+# --- M5: evolving occupancy along the trajectory (the structural process payoff) -------
+
+
+def test_evolve_occupancy_is_opt_in_and_deterministic():
+    """evolve_occupancy=False is byte-identical to today; =True is deterministic & changes occupancy."""
+    lat = _ferro()
+    frozen = proc.anneal(budget=80, evolve_occupancy=False)
+    live = proc.anneal(budget=80, evolve_occupancy=True)
+    # Opt-out leaves occupancy exactly as the input structure (only spins move).
+    out_frozen = proc.run_process(lat, frozen, seed=3)
+    assert np.array_equal(out_frozen.occupied, lat.occupied)
+    # Opt-in evolves occupancy (it differs) and is deterministic in (lattice, process, seed).
+    a = proc.run_process(lat, live, seed=3)
+    b = proc.run_process(lat, live, seed=3)
+    assert np.array_equal(a.occupied, b.occupied)
+    assert not np.array_equal(a.occupied, lat.occupied)
+
+
+def test_pressure_schedule_changes_density():
+    """Cooling the occupancy under higher pressure (μ) freezes in a denser solid (structural)."""
+    from engine.process import Process, Stage
+
+    lat = _ferro()
+
+    def sinter(P):
+        return Process((Stage(3.5, 3.5, 8, pressure=P), Stage(3.5, 0.4, 112, pressure=P)),
+                       name=f"sinter{P}", evolve_occupancy=True)
+
+    dense = [proc.run_process(lat, sinter(+6.0), seed=s).fill_fraction for s in range(3)]
+    porous = [proc.run_process(lat, sinter(-6.0), seed=s).fill_fraction for s in range(3)]
+    assert np.mean(dense) > np.mean(porous) + 0.03

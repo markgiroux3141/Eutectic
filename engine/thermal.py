@@ -36,13 +36,16 @@ import numpy as np
 
 from .conditions import STANDARD, Conditions
 from .lattice import (
+    COHESION_J0,
     EXCHANGE_J0,
     Lattice,
+    _LATTICE_GAS_FACTOR,
     _neighbor_sum,
     checkerboard_colors,
     metropolis_sweep,
+    occupancy_sweep,
 )
-from .rng import SplitMix64, mix
+from .rng import SplitMix64, hash_array, mix
 
 # --- ensemble sampling defaults -------------------------------------------------------
 # A "measurement" = burn-in sweeps to reach equilibrium, then n_samples observations each
@@ -56,6 +59,15 @@ DEFAULT_SAMPLE_EVERY: int = 2
 
 # Salt so the ensemble RNG stream never collides with merge/relax streams (spec §6).
 _ENSEMBLE_SALT: int = 0x54  # 'T'
+# A distinct salt for the occupancy (melting) ensemble so its stream never collides with the
+# spin ensemble's.
+_OCC_SALT: int = 0x4F       # 'O'
+
+# Pressure → chemical-potential gain (M5). ``Conditions.pressure`` shifts μ above its
+# particle-hole-symmetric (half-filling) value, in the occupancy energy's own units:
+# positive P raises μ → favours occupancy → higher equilibrium density (compression). At the
+# standard P=0 the ensemble sits at the symmetric μ (density ½), where melting is cleanest.
+PRESSURE_TO_MU: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -222,3 +234,208 @@ def curie_temperature(
         peak = max(range(len(sweep)), key=lambda i: sweep[i].heat_capacity)
         tc = float(temps[peak])
     return (tc, sweep) if return_curve else tc
+
+
+# === M5: the occupancy ensemble — melting as an order-disorder transition =============
+# The positional twin of the spin ensemble above. ``occupied`` is now a thermal degree of
+# freedom (a non-conserved repulsive lattice gas, :func:`engine.lattice.occupancy_sweep`);
+# its order-disorder transition *is* crystalline melting. We measure the same trio that
+# proved the Curie point — an order parameter, the heat capacity, and (at the symmetric μ)
+# the textbook 2D point — but for *positional* order: a **staggered density** that collapses
+# at ``T_m`` while the mean density stays pinned at ½ (order lost at fixed density → melting,
+# not sublimation). Determinism: seeded from structure + cohesion hash + quantized conditions.
+
+# Exact 2D-Ising critical point — the parameter-free anchor both transitions land on.
+ISING_TC_2D: float = 2.0 / np.log(1.0 + np.sqrt(2.0))
+
+
+@dataclass(frozen=True)
+class OccupancyStats:
+    """Observables of the occupancy (lattice-gas) ensemble at fixed conditions (M5)."""
+
+    conditions: Conditions
+    mean_energy: float        # ⟨E⟩ of the lattice-gas Hamiltonian
+    energy_var: float         # Var(E)
+    mean_density: float       # ⟨ρ⟩ = ⟨n⟩, the fill fraction at these conditions
+    staggered_order: float    # ⟨|ψ|⟩, sublattice-occupancy order parameter (crystallinity)
+    heat_capacity: float      # C = Var(E)/(N·T²), the melting detector
+    n_cells: int              # lattice size, the normalisation N
+
+
+def _coupling_scale(lattice: Lattice, coupling: float) -> float:
+    """Representative bond repulsion scale ⟨ε⟩ = 4·coupling·⟨cohesion²⟩ (per-bond average)."""
+    coh = np.asarray(lattice.cohesion, dtype=np.float64)
+    return _LATTICE_GAS_FACTOR * coupling * float((coh * coh).mean())
+
+
+def symmetric_mu(lattice: Lattice, coupling: float = COHESION_J0) -> float:
+    """The particle-hole-symmetric chemical potential μ that holds ⟨ρ⟩ = ½ (M5).
+
+    At this μ the repulsive lattice gas keeps mean density at one-half across the melting
+    transition, so the staggered order can collapse at *fixed* density. Derived from the
+    lattice-gas↔Ising mapping: μ_sym = (z/2)·⟨ε⟩ with coordination ``z = 2·dim`` and ⟨ε⟩ the
+    mean bond repulsion (for a uniform-cohesion 2D lattice this is 8·coupling·cohesion²).
+    """
+    z = 2 * lattice.dim
+    return 0.5 * z * _coupling_scale(lattice, coupling)
+
+
+def chemical_potential(
+    lattice: Lattice, conditions: Conditions, coupling: float = COHESION_J0
+) -> float:
+    """μ at these conditions: the symmetric (half-filling) value plus the pressure offset.
+
+    Activates ``Conditions.pressure`` (M5): P>0 raises μ → denser, P<0 → more porous. P=0
+    (standard) sits at :func:`symmetric_mu`, the clean melting point.
+    """
+    return symmetric_mu(lattice, coupling) + PRESSURE_TO_MU * conditions.pressure
+
+
+def occupancy_energy(lattice: Lattice, n: np.ndarray, *, coupling: float, mu: float) -> float:
+    """Lattice-gas Hamiltonian energy of occupancy ``n`` (see :func:`occupancy_sweep`).
+
+    ``E = Σ_⟨ij⟩ ε_ij n_i n_j − μ Σ n_i`` with ``ε_ij = 4·coupling·coh_i·coh_j``; the bond
+    term is halved to de-double-count each bond. Pure fixed-order reduction (determinism).
+    """
+    coh = np.asarray(lattice.cohesion, dtype=np.float64)
+    nn = np.asarray(n, dtype=np.float64)
+    h = _neighbor_sum(coh * nn)
+    bond = 0.5 * _LATTICE_GAS_FACTOR * coupling * float((coh * nn * h).sum())
+    return bond - mu * float(nn.sum())
+
+
+def _staggered_sign(shape: tuple[int, ...]) -> np.ndarray:
+    """(-1)^(sum of coordinates): +1/−1 on the two sublattices of the bipartite lattice."""
+    return (np.indices(shape).sum(axis=0) % 2 * 2 - 1).astype(np.float64)
+
+
+def _occupancy_seed(lattice: Lattice, conditions: Conditions, salt: int) -> int:
+    """Seed for an occupancy ensemble: structure sig + cohesion hash + quantized conditions.
+
+    The cohesion hash is folded in explicitly because cohesion is *not* in
+    ``structural_signature`` (it carries no independent entropy for combination seeding), yet
+    it fully determines the melting behaviour — so the *measurement* seed must reflect it.
+    """
+    t, p, h = conditions.seed_key()
+    return mix(lattice.structural_signature(), hash_array(lattice.cohesion),
+               t, p, h, salt, _OCC_SALT)
+
+
+def sample_occupancy_ensemble(
+    lattice: Lattice,
+    conditions: Conditions = STANDARD,
+    *,
+    seed: int | None = None,
+    coupling: float = COHESION_J0,
+    burn_in: int = DEFAULT_BURN_IN,
+    n_samples: int = DEFAULT_SAMPLES,
+    sample_every: int = DEFAULT_SAMPLE_EVERY,
+) -> OccupancyStats:
+    """Measure equilibrium occupancy observables of ``lattice``'s bond network at ``conditions``.
+
+    Starts from the perfect checkerboard crystal (symmetry broken, the positional analogue of
+    the aligned-spin start), burns in at ``conditions.temperature`` and the conditions' μ
+    (:func:`chemical_potential`), then samples energy, density, and the staggered order
+    parameter ``ψ = (1/N)·Σ (−1)^(Σcoords)·(2n−1)``. Deterministic (spec §6).
+    """
+    T = conditions.temperature
+    mu = chemical_potential(lattice, conditions, coupling)
+    shape = lattice.shape
+    n_cells = int(np.prod(shape))
+    if seed is None:
+        seed = _occupancy_seed(lattice, conditions, salt=0)
+    gen = SplitMix64(seed).numpy_generator()
+    colors = checkerboard_colors(shape)
+    sign = _staggered_sign(shape)
+    cohesion = lattice.cohesion
+
+    # perfect checkerboard crystal start (one sublattice full) — symmetry broken.
+    occ = ((np.indices(shape).sum(axis=0) % 2) == 0).astype(np.uint8)
+
+    for _ in range(burn_in):
+        occ = occupancy_sweep(occ, cohesion, colors,
+                              coupling=coupling, temperature=T, mu=mu, gen=gen)
+
+    energies = np.empty(n_samples, dtype=np.float64)
+    psis = np.empty(n_samples, dtype=np.float64)
+    rhos = np.empty(n_samples, dtype=np.float64)
+    for k in range(n_samples):
+        for _ in range(sample_every):
+            occ = occupancy_sweep(occ, cohesion, colors,
+                                  coupling=coupling, temperature=T, mu=mu, gen=gen)
+        nn = occ.astype(np.float64)
+        energies[k] = occupancy_energy(lattice, occ, coupling=coupling, mu=mu)
+        psis[k] = abs(float((sign * (2.0 * nn - 1.0)).sum()) / n_cells)
+        rhos[k] = float(nn.mean())
+
+    e_var = float(energies.var())
+    return OccupancyStats(
+        conditions=conditions,
+        mean_energy=float(energies.mean()),
+        energy_var=e_var,
+        mean_density=float(rhos.mean()),
+        staggered_order=float(psis.mean()),
+        heat_capacity=e_var / (n_cells * T * T),
+        n_cells=n_cells,
+    )
+
+
+def occupancy_temperature_sweep(
+    lattice: Lattice,
+    temperatures,
+    *,
+    pressure: float = 0.0,
+    coupling: float = COHESION_J0,
+    burn_in: int = DEFAULT_BURN_IN,
+    n_samples: int = DEFAULT_SAMPLES,
+    sample_every: int = DEFAULT_SAMPLE_EVERY,
+) -> list[OccupancyStats]:
+    """Measure the occupancy ensemble at each temperature (fixed pressure). One stat / point."""
+    out: list[OccupancyStats] = []
+    for T in temperatures:
+        cond = Conditions(temperature=float(T), pressure=pressure)
+        out.append(sample_occupancy_ensemble(
+            lattice, cond, coupling=coupling,
+            burn_in=burn_in, n_samples=n_samples, sample_every=sample_every,
+        ))
+    return out
+
+
+def melting_point(
+    lattice: Lattice,
+    *,
+    coupling: float = COHESION_J0,
+    pressure: float = 0.0,
+    n_temps: int = 11,
+    bracket: tuple[float, float] = (0.45, 1.45),
+    order_floor: float = 0.30,
+    burn_in: int = DEFAULT_BURN_IN,
+    n_samples: int = DEFAULT_SAMPLES,
+    sample_every: int = DEFAULT_SAMPLE_EVERY,
+    return_curve: bool = False,
+):
+    """Melting temperature ``T_m`` = the occupancy ``C(T)`` peak (the universal detector, M5).
+
+    Brackets the sweep around the analytic order-disorder point ``T_m ≈ 2.269·coupling·⟨coh²⟩``
+    (the lattice-gas↔2D-Ising value) — the prediction only sets *where to look*; the returned
+    value is the *measured* heat-capacity peak, the temperature the staggered order collapses
+    through. Returns ``None`` if the lattice never develops sublattice order over the range
+    (``max ψ < order_floor`` — e.g. a degenerate all-empty structure), the "is there a crystal
+    to melt" gate. With ``return_curve=True`` returns ``(T_m, sweep)``.
+    """
+    coh = np.asarray(lattice.cohesion, dtype=np.float64)
+    # Analytic order-disorder point for the (representative) uniform bond: 2.269·coupling·⟨c²⟩.
+    predicted = ISING_TC_2D * coupling * float((coh * coh).mean())
+    lo, hi = bracket[0] * predicted, bracket[1] * predicted
+    temps = np.linspace(lo, hi, n_temps)
+    sweep = occupancy_temperature_sweep(
+        lattice, temps, pressure=pressure, coupling=coupling,
+        burn_in=burn_in, n_samples=n_samples, sample_every=sample_every,
+    )
+    max_order = max(s.staggered_order for s in sweep)
+    if max_order < order_floor:
+        tm = None
+    else:
+        peak = max(range(len(sweep)), key=lambda i: sweep[i].heat_capacity)
+        tm = float(temps[peak])
+    return (tm, sweep) if return_curve else tm

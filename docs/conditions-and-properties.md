@@ -112,13 +112,19 @@ engine.
 
 ---
 
-## 5. The single highest-leverage move
+## 5. The single highest-leverage move ✅ DONE (M5)
 
 Making **`occupied` a thermal degree of freedom** (non-conserved vacancy dynamics with a
 pressure/chemical-potential term — *simpler* than the conserved Kawasaki dynamics we tested
 and rejected for SC) unlocks, from one change: **melting, thermal expansion, density(T,P),
 pressure-tuned conductivity/superconductivity, and heat capacity as a transition detector.**
 It also touches the validated M2/M3 percolation/density, so it must re-validate them.
+
+**Done in M5** (see §7 and README **M5 findings**): occupancy is a *repulsive* lattice gas
+whose order-disorder transition is crystalline melting (parameter-free `T_m` at the textbook
+2D point, at fixed density); pressure is live (density(P), pressure-tuned percolation
+re-validates M2). The crystalline (fixed-density) framing was a deliberate choice over the
+attractive-lattice-gas sublimation it would otherwise have been.
 
 ---
 
@@ -177,9 +183,25 @@ demo'd in the explorer before moving on.
     steepest-descent locator as a cheaper Tc and **rejected it** — it is biased low (~1.3 for
     all three ferromagnets, catching the saturation roll-off, not the fluctuation peak), so
     the heat-capacity peak remains the canonical detector.
-- **M5 — Thermal occupancy.** Make `occupied` thermal (non-conserved + pressure/μ). Falls
-  out: melting point, thermal expansion, density(T,P), pressure-tuned conductivity.
-  Re-validate M2/M3 under the new dynamics.
+- **M5 — Thermal occupancy. ✅ DONE.** `occupied` is now a thermal degree of freedom — a
+  non-conserved **repulsive** lattice gas (`engine.lattice.occupancy_sweep`) on a new per-site
+  `cohesion` field (from `bond_energy`), with `Conditions.pressure` entering as the
+  chemical-potential μ. `engine/thermal.py` gains the occupancy ensemble (staggered-density order
+  parameter, occupancy heat capacity, `melting_point`); `melting_temperature` is a stored property
+  gated by solidity (like Curie).
+  - **Keystone validation (parameter-free, the user chose *crystalline* melting):** the occupancy
+    order-disorder transition is melting — `C(T)` peaks at the textbook `T_m = 2.269·J0·⟨coh²⟩`
+    exactly where the staggered order parameter `ψ` collapses, **at fixed density ½** (positional
+    order lost without a density change → crystalline melting, not the sublimation an attractive
+    lattice gas gives). `tests/test_melting.py`; `tools.explorer melting-sweep`.
+  - **Falls out / re-validated:** `T_m` tracks `bond_energy` (tungsten > zinc — recovers the real
+    ordering); pressure tunes density and drives the M2 percolation transition (pressure-tuned
+    percolation re-validates M2 under thermal occupancy). **Honest scope (no-fudge):** it is a
+    *continuous* order-disorder transition (β-brass analogue), not a first-order melt with latent
+    heat; `melting_temperature` is the bond network's order-disorder point at *commensurate*
+    filling (intrinsic to bonding, not the standard-conditions fill); stored value is coarse
+    (lean sweep); the cooling-rate → grain-size process signal is weak (reported), so the process
+    payoff is structural **density** under a pressure schedule. See README **M5 findings**.
 - **M6 — Transport + honest superconductivity.** Thermal conductivity (reuse the Laplacian);
   superconductivity via phase-coherence (XY) → real Tc; retire/relabel the static SC proxy.
 - **M7 — Spectral.** Band gap → conductor/semiconductor/insulator (`eigh`).

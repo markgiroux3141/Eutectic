@@ -18,10 +18,12 @@ engine/        deterministic, headless materials engine (never imports game/UI c
   elements.py    root element definitions + base lattice generation
   material.py    Material type + combine() pipeline (M1+)
   registry.py    discovered materials + lineage graph (M1+)
-  conditions.py  Conditions(T, P, H) — the structure/state separation (M4+)
-  thermal.py     thermal-ensemble engine: observables at conditions, Curie point (M4+)
-  process.py     synthesis as a trajectory: anneal/quench/field-cool schedules (process layer)
+  conditions.py  Conditions(T, P, H) — the structure/state separation (M4+); P live (M5)
+  thermal.py     thermal-ensemble engine: spin observables + Curie (M4); occupancy observables
+                 + melting point (M5)
+  process.py     synthesis as a trajectory: anneal/quench/field-cool; optional occupancy evolution (M5)
   properties/    pure Lattice -> float extractors (M2+); microstructure.py = process readouts
+                 (domain/positional order); cohesion field on the lattice drives melting (M5)
 machines/      worked-example performance equations (M5+); consume Material.properties only
 tools/         explorer.py — distributions, single-material inspection, lattice render
 tests/         determinism + distribution tests (run in CI from M1)
@@ -150,6 +152,48 @@ properties are still measured (spec §1).
   which plugs into this same executor. Also: a process is **not** part of a material's identity
   yet (id derives from lineage only), so registry-caching by process is a follow-up.
 
+### M5 findings (crystalline melting falls out, and its honest scope)
+
+M5 made `occupied` thermal and asked melting to *emerge* — pressure-tested the same way as M4.
+
+- **Crystalline melting as an order-disorder transition — proven, parameter-free.** Occupancy is
+  a non-conserved **repulsive** lattice gas; at half-filling its low-T state is a checkerboard
+  crystal (atoms on one sublattice), and the order parameter is the **staggered density** `ψ`.
+  Three things coincide with no fit: the occupancy heat capacity `C(T)=Var(E)/(N·T²)` peaks at the
+  textbook 2D point `T_m = 2.269·J0·⟨coh²⟩`, `ψ` collapses at that same `T`, **and the mean
+  density stays pinned at ½ across it**. That last column is the whole point of the user's chosen
+  model: *positional order is lost at fixed density* — crystalline melting, not the
+  sublimation/condensation an *attractive* lattice gas would give (we considered and rejected that
+  framing). `tests/test_melting.py`; live: `python -m tools.explorer melting-sweep iron --plot`.
+- **Melting tracks bonding — recovers the real ordering.** `T_m ∝ cohesion²` and `cohesion` comes
+  from `bond_energy`, so refractory elements (tungsten, carbon) melt *above* soft ones (zinc) —
+  the structural analogue of iron>cobalt>nickel for Curie, **measured** not assigned.
+- **Pressure is now live (M2 re-validated under the new dynamics).** `P` enters as a
+  chemical-potential offset `μ = μ_sym + P`: raising it densifies the lattice gas and drives it
+  across the percolation threshold `p_c` — *pressure-tuned percolation*, i.e. the validated M2
+  transition reappearing under thermal occupancy. At `P=0` the particle-hole-symmetric `μ` pins
+  half-filling (where melting is cleanest). Honest: a solid *below* `T_m` is ≈incompressible
+  (density barely moves with `P`); the compressible response lives in the fluid phase / near `T_m`.
+- **The process payoff here is structural density — not grain size (a reported negative).** Occupancy
+  evolution is wired into the process executor (opt-in; `STANDARD_PROCESS` byte-identical). Cooling
+  under a pressure schedule freezes in **different densities** (sinter-dense vs sinter-porous) — a
+  structural, non-magnetic path-dependence (`process-compare`). But the cooling-rate → *grain-size*
+  signal is **weak**, and we say so: non-conserved checkerboard order heals too fast to freeze
+  anti-phase domains at this lattice scale, and the global `ψ` cancels opposing anti-phase domains
+  (the same "net `|M|` at `H=0` is the wrong readout" lesson from the process layer). Density is the
+  robust readout.
+- **Scope (honest).** (1) This is a *continuous* order-disorder transition (the β-brass lattice
+  analogue), **not** a first-order liquid-solid with latent heat. (2) `melting_temperature` is the
+  order-disorder point of the material's **bond network at commensurate (half) filling** — an
+  intrinsic property of the bonding, measured at the filling where crystalline order is defined, not
+  at the material's standard-conditions fill. (3) The **stored** `melting_temperature` is gated by
+  solidity (a dispersed/gas-like structure has no crystal to melt → `0.0`) and uses a lean sweep, so
+  it is honestly *coarse*; the explorer's `melting-sweep` gives the accurate curve. (4) `density(T,P)`
+  is `⟨n⟩ × mean atomic mass` (a uniform per-site-mass approximation — full per-site mass on
+  thermally-filled sites is later work). `cohesion` is deliberately kept **out of**
+  `structural_signature` (it carries no independent entropy — it's derived from `bond_energy`), so
+  every M0–M4 seed and stored value stays byte-identical.
+
 - [x] **Process layer (Step 1)** — synthesis as a *trajectory through conditions-space*
       (`engine/process.py`): the same ingredients, **annealed vs. quenched vs. field-cooled**,
       settle into measurably different structures. Generalises `relax()` (a single constant-T
@@ -157,10 +201,18 @@ properties are still measured (spec §1).
       take an optional `process=`. Properties still *measured* from the result (spec §1):
       "wrong process = different material" is a legible microstructure consequence, not a gate.
       See **Process layer findings** below.
-- [ ] M5 — Thermal occupancy: make `occupied` thermal → melting, thermal expansion,
-      density(T,P), pressure-tuned conductivity. **Plugs into the same process executor** — the
-      moment atomic structure becomes dynamic, anneal/quench gain density/grain effects.
-      Re-validate M2/M3 under the new dynamics.
+- [x] **M5 — Thermal occupancy → crystalline melting.** `occupied` is now a thermal degree of
+      freedom: a non-conserved **repulsive lattice gas** (`engine.lattice.occupancy_sweep`, the
+      positional twin of the spin kernel) on a new per-site `cohesion` field derived from
+      `bond_energy`. Its order-disorder transition *is* crystalline melting. `engine/thermal.py`
+      gains the occupancy ensemble (staggered-density order parameter, occupancy heat capacity);
+      `melting_temperature` is a stored property (gated by solidity, like Curie). `Conditions.pressure`
+      is now **live** (chemical-potential offset → density(P), pressure-tuned percolation), and the
+      process executor can evolve occupancy too (opt-in; `STANDARD_PROCESS` stays byte-identical).
+      **Keystone proven, parameter-free:** the occupancy `C(T)` peaks at the textbook
+      `T_m = 2.269·J0·⟨coh²⟩` exactly where the staggered order collapses, *at fixed density ½*
+      (crystalline melting, not sublimation). See **M5 findings** below and
+      `python -m tools.explorer melting-sweep iron --plot`.
 - [ ] M6 — Transport + honest superconductivity (phase-coherence XY → real Tc; retire the
       static SC proxy). · M7 — Spectral (band gap). · M8 — Mechanical (strength/ductility).
 - [ ] Machine layer (motor) + game shell follow (spec §8, §11).
@@ -186,8 +238,15 @@ python -m tools.explorer temperature-sweep iron --plot
 python -m tools.explorer temperature-sweep iron copper --hi 3.0
 
 # Process layer: same ingredients, different synthesis (anneal/quench/field-cool) ->
-# different microstructure. Field-cool builds remanence (the "process payoff").
+# different microstructure. Field-cool builds remanence; the M5 structural section shows
+# cooling under pressure freezing in different densities (sinter-dense vs sinter-porous).
 python -m tools.explorer process-compare iron chromium --plot
+
+# M5 keystone: crystalline melting. Occupancy order-disorder sweep -> psi(T), C(T), rho(T).
+# The C-peak lands on the order collapse AT FIXED DENSITY (melting, not sublimation); a
+# uniform-cohesion material melts at the textbook 2.269. Refractory elements melt hotter.
+python -m tools.explorer melting-sweep iron --plot
+python -m tools.explorer melting-sweep tungsten --pressure 0.0
 
 # See the higher-order percolation transitions superconductivity rides (P(min-cut>=k) vs fill)
 python -m tools.explorer connectivity-sweep --plot

@@ -33,12 +33,17 @@ from dataclasses import dataclass
 import numpy as np
 
 from .lattice import (
+    COHESION_J0,
     EXCHANGE_J0,
     Lattice,
     checkerboard_colors,
     metropolis_sweep,
+    occupancy_sweep,
 )
 from .rng import SplitMix64, hash_ints
+
+# Salt so the occupancy stream never collides with the spin stream inside a process.
+_OCC_STREAM_SALT: int = 0x4F  # 'O'
 
 # Quantization for the process signature (matches the conditions seed precision).
 _SIG_SCALE: int = 10_000
@@ -79,10 +84,18 @@ class Stage:
 
 @dataclass(frozen=True)
 class Process:
-    """An ordered synthesis schedule (a trajectory through conditions-space)."""
+    """An ordered synthesis schedule (a trajectory through conditions-space).
+
+    ``evolve_occupancy`` (M5) opts the trajectory into evolving the **occupancy** field too
+    (the lattice-gas / crystallisation dynamics), not just spins — so a slow anneal coarsens
+    atoms into positional (sublattice) order while a quench freezes positional disorder, a
+    *structural* (non-magnetic) path-dependence. Default ``False`` keeps occupancy frozen, so
+    ``STANDARD_PROCESS`` still reproduces :func:`engine.lattice.relax` byte-for-byte.
+    """
 
     stages: tuple[Stage, ...]
     name: str = "custom"
+    evolve_occupancy: bool = False
 
     @property
     def total_sweeps(self) -> int:
@@ -91,10 +104,10 @@ class Process:
     def signature(self) -> int:
         """Stable 64-bit hash of the schedule (quantized dials; ``name`` excluded).
 
-        Two processes with the same stages produce the same trajectory, so the signature
-        depends only on the dynamics, not the label.
+        Two processes with the same stages (and same dynamics flags) produce the same
+        trajectory, so the signature depends only on the dynamics, not the label.
         """
-        ints: list[int] = []
+        ints: list[int] = [int(self.evolve_occupancy)]
         for s in self.stages:
             ints += [_q(s.t_start), _q(s.t_end), int(s.sweeps), _q(s.field), _q(s.pressure)]
         return hash_ints(ints)
@@ -111,34 +124,67 @@ def run_process(
 
     Starts from the lattice's *current* spins (so a single constant stage reproduces
     :func:`engine.lattice.relax`); a process that wants to start from a melt simply opens
-    with a hot hold (see :func:`anneal`/:func:`quench`/:func:`field_cool`). Only ``spin`` is
-    evolved — geometry/couplings (``occupied``/``atom_type``/``mass``/``moment``) are the
-    permanent structure (docs §2). Empty cells are pinned to +1 at the end, as in ``relax``.
+    with a hot hold (see :func:`anneal`/:func:`quench`/:func:`field_cool`). By default only
+    ``spin`` is evolved — geometry/couplings are the permanent structure (docs §2) — and empty
+    cells are pinned to +1 at the end, as in ``relax``.
 
-    Deterministic in ``(lattice, process, seed)``: one seeded stream, fixed stage/sweep order
+    With ``process.evolve_occupancy`` (M5) the **occupancy** field is evolved too, along the
+    same schedule (the lattice-gas / crystallisation kernel at each stage's ``T`` and a
+    pressure-set chemical potential μ): a slow anneal coarsens atoms into sublattice order, a
+    quench freezes positional disorder. Its acceptance stream is *spawned separately* so the
+    spin trajectory is unchanged; with the default ``evolve_occupancy=False`` occupancy is
+    frozen and the spin path is byte-for-byte today's ``relax`` (the equivalence guard).
+
+    Deterministic in ``(lattice, process, seed)``: seeded streams, fixed stage/sweep order
     (spec §6).
     """
-    occ = lattice.occupied.astype(bool)
+    occ_mask = lattice.occupied.astype(bool)
     spin = lattice.spin.astype(np.int8).copy()
-    m = np.asarray(lattice.moment, dtype=np.float64) * occ
+    m = np.asarray(lattice.moment, dtype=np.float64) * occ_mask
     gen = SplitMix64(seed).numpy_generator()
     colors = checkerboard_colors(lattice.shape)
 
-    for stage in process.stages:
-        for i in range(stage.sweeps):
-            spin = metropolis_sweep(
-                spin, m, occ, colors,
-                coupling=coupling, temperature=stage.temperature_at(i),
-                field=stage.field, gen=gen,
-            )
+    evolve_occ = process.evolve_occupancy
+    if evolve_occ:
+        # Imported lazily so the lattice-level executor needs the higher-level thermal module
+        # only when occupancy evolution is actually requested.
+        from .thermal import PRESSURE_TO_MU, symmetric_mu
 
-    spin = np.where(occ, spin, 1).astype(np.int8)
+        occ = lattice.occupied.astype(np.uint8).copy()
+        cohesion = lattice.cohesion
+        occ_gen = SplitMix64(seed).spawn(_OCC_STREAM_SALT).numpy_generator()
+        mu_base = symmetric_mu(lattice, COHESION_J0)  # half-filling μ; pressure shifts it
+
+    for stage in process.stages:
+        mu = (mu_base + PRESSURE_TO_MU * stage.pressure) if evolve_occ else 0.0
+        for i in range(stage.sweeps):
+            T = stage.temperature_at(i)
+            spin = metropolis_sweep(
+                spin, m, occ_mask, colors,
+                coupling=coupling, temperature=T, field=stage.field, gen=gen,
+            )
+            if evolve_occ:
+                occ = occupancy_sweep(
+                    occ, cohesion, colors,
+                    coupling=COHESION_J0, temperature=T, mu=mu, gen=occ_gen,
+                )
+
+    if evolve_occ:
+        occ_mask = occ.astype(bool)
+        spin = np.where(occ_mask, spin, 1).astype(np.int8)
+        return Lattice(
+            occupied=occ, atom_type=lattice.atom_type, spin=spin,
+            mass=lattice.mass, moment=lattice.moment, cohesion=lattice.cohesion,
+        )
+
+    spin = np.where(occ_mask, spin, 1).astype(np.int8)
     return Lattice(
         occupied=lattice.occupied,
         atom_type=lattice.atom_type,
         spin=spin,
         mass=lattice.mass,
         moment=lattice.moment,
+        cohesion=lattice.cohesion,
     )
 
 
@@ -164,27 +210,34 @@ _MELT: int = 8
 def anneal(
     *, t_hot: float = _T_HOT, t_cold: float = _T_COLD, budget: int = _BUDGET,
     melt: int = _MELT, ramp_sweeps: int | None = None, name: str = "anneal",
+    evolve_occupancy: bool = False,
 ) -> Process:
     """Melt, then cool slowly to ``t_cold`` over the budget (large domains, low energy).
 
     ``ramp_sweeps`` shorter than the budget gives a *faster* cool followed by a cold hold —
-    use it to build an "anneal-fast" for comparison.
+    use it to build an "anneal-fast" for comparison. With ``evolve_occupancy=True`` (M5) the
+    slow cool also crystallises the *occupancy* into sublattice order (high positional order).
     """
     ramp = (budget - melt) if ramp_sweeps is None else ramp_sweeps
     cold = budget - melt - ramp
     stages = [Stage(t_hot, t_hot, melt), Stage(t_hot, t_cold, ramp)]
     if cold > 0:
         stages.append(Stage(t_cold, t_cold, cold))
-    return Process(tuple(stages), name=name)
+    return Process(tuple(stages), name=name, evolve_occupancy=evolve_occupancy)
 
 
 def quench(
     *, t_hot: float = _T_HOT, t_cold: float = _T_COLD, budget: int = _BUDGET,
-    melt: int = _MELT, name: str = "quench",
+    melt: int = _MELT, name: str = "quench", evolve_occupancy: bool = False,
 ) -> Process:
-    """Melt, then slam cold and hold (frozen-in disorder: small domains, high energy)."""
+    """Melt, then slam cold and hold (frozen-in disorder: small domains, high energy).
+
+    With ``evolve_occupancy=True`` (M5) the fast cool freezes *positional* disorder too — the
+    occupancy never reaches sublattice order (low positional order), the structural quench.
+    """
     return Process(
-        (Stage(t_hot, t_hot, melt), Stage(t_cold, t_cold, budget - melt)), name=name
+        (Stage(t_hot, t_hot, melt), Stage(t_cold, t_cold, budget - melt)),
+        name=name, evolve_occupancy=evolve_occupancy,
     )
 
 

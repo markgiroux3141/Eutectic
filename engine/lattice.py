@@ -46,6 +46,18 @@ MERGE_DOMAIN_SCALE: float = 2.0
 # Global exchange constant. Bond coupling is J = EXCHANGE_J0 * moment_i * moment_j, so a
 # bond between two unit-moment cells has coupling EXCHANGE_J0.
 EXCHANGE_J0: float = 1.0
+
+# --- occupancy / lattice-gas coupling (M5, melting) -----------------------------------
+# Global occupancy coupling, the analogue of EXCHANGE_J0 for the *positional* (melting)
+# transition. The occupancy order-disorder point is the textbook 2D-Ising T_m = 2.269·J0_occ
+# for a uniform-cohesion lattice — i.e. COHESION_J0 plays exactly the role for melting that
+# EXCHANGE_J0 plays for the Curie point, so J0_occ=1 melts where J0=1 orders. (Internally the
+# lattice-gas energy carries the n=(s+1)/2 mapping factor of 4; see :func:`occupancy_sweep`.)
+COHESION_J0: float = 1.0
+# The lattice-gas ↔ Ising mapping factor: with n=(s+1)/2, ε n_i n_j expands to ε/4·s_i s_j,
+# so an Ising-equivalent coupling J needs lattice-gas repulsion ε = 4J. Folding it in here
+# lets COHESION_J0 be stated directly in Ising (Curie-comparable) units.
+_LATTICE_GAS_FACTOR: float = 4.0
 # Per-cell magnetic moment is mapped linearly from an element's ``magnetic_tendency`` in
 # [0,1] into [MOMENT_LO, MOMENT_HI]. The critical moment (where J0*m^2/T crosses the 2D
 # Ising point J/T ~ 0.4407, i.e. m_c = sqrt(0.4407*T/J0) ~ 0.94 at the defaults) is tuned
@@ -53,6 +65,19 @@ EXCHANGE_J0: float = 1.0
 # and everything else (tendency <= 0.40 -> m <= 0.64) so the transition is legible.
 MOMENT_LO: float = 0.20
 MOMENT_HI: float = 1.30
+
+# --- cohesion / lattice-gas coupling (M5, docs §4-§5) ---------------------------------
+# Per-cell **bond stiffness**: the energy scale that resists positional disordering, i.e.
+# the structural source of a material's melting point. Unlike mass/moment (which are "what
+# is here now", zero on empty cells), cohesion is "what this *site* is" — the bonding a cell
+# would contribute *if* occupied — so it is defined on EVERY cell, because M5 lets occupancy
+# itself become thermal (a previously-empty site can fill, and must know its own cohesion).
+# Mapped linearly from an element's ``bond_energy`` affinity in [0,1] into [COH_LO, COH_HI].
+# The occupancy order-disorder (melting) temperature scales as T_m ∝ J0_occ·cohesion² (the
+# 2D-Ising/lattice-gas mapping), so high-bond_energy elements (tungsten, carbon) melt high
+# and low-bond_energy ones (mercury, hydrogen) melt low — a *measured*, legible ordering.
+COH_LO: float = 0.60
+COH_HI: float = 1.25
 
 # Number of distinct atom "kinds" a base lattice draws from. Drives bond rules later.
 DEFAULT_ATOM_TYPES: int = 4
@@ -84,9 +109,22 @@ class Lattice:
       This is what makes magnetism a *measured* phase transition rather than an assigned
       number. Optional at construction; if omitted it defaults to unit moment on occupied
       cells (uniform-coupling Ising, all synthetic/test lattices need).
+    * ``cohesion`` — float32, per-cell **bond stiffness** (the source of the melting point,
+      M5). Unlike mass/moment it is defined on *every* cell (it is a property of the *site*,
+      not of "what is here now"), because M5 makes occupancy thermal — a previously-empty
+      cell can fill and must carry its own cohesion. A root fills it from ``bond_energy``;
+      :func:`merge` carries it through domains. Optional at construction; if omitted defaults
+      to uniform 1.0 everywhere (the keystone's plain lattice-gas).
 
     Frozen so a Lattice is a value object; transforms return new instances. Arrays are
     not deep-copied on construction — callers should not mutate arrays they hand in.
+
+    NB: ``cohesion`` is intentionally **excluded from** :meth:`structural_signature`. The
+    signature seeds combination/measurement RNG, and cohesion is *always* a deterministic
+    function of fields already hashed (``bond_energy`` for a root — which already shapes
+    ``occupied`` — and the parents' cohesion + merge mask for a combination), so it adds no
+    independent entropy; excluding it keeps every M0–M4 seed and stored value byte-identical.
+    Measurements that *use* cohesion (melting) fold a cohesion hash into their own seed.
     """
 
     occupied: np.ndarray
@@ -94,6 +132,7 @@ class Lattice:
     spin: np.ndarray
     mass: np.ndarray | None = None
     moment: np.ndarray | None = None
+    cohesion: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         if self.mass is None:
@@ -102,12 +141,17 @@ class Lattice:
         if self.moment is None:
             # Backward-compatible default: unit moment on occupied cells (uniform coupling).
             object.__setattr__(self, "moment", self.occupied.astype(np.float32))
+        if self.cohesion is None:
+            # Backward-compatible default: uniform bond stiffness everywhere (plain lattice
+            # gas — the keystone's substrate). Defined on empty cells too (site property).
+            object.__setattr__(self, "cohesion", np.ones(self.occupied.shape, dtype=np.float32))
         shapes = {
             self.occupied.shape,
             self.atom_type.shape,
             self.spin.shape,
             self.mass.shape,
             self.moment.shape,
+            self.cohesion.shape,
         }
         if len(shapes) != 1:
             raise ValueError(f"lattice arrays disagree on shape: {shapes}")
@@ -153,6 +197,7 @@ class Lattice:
             spin=self.spin.copy(),
             mass=self.mass.copy(),
             moment=self.moment.copy(),
+            cohesion=self.cohesion.copy(),
         )
 
 
@@ -220,7 +265,17 @@ def generate_base(
     # --- mass: each occupied cell carries the element's atomic mass (spec §5.1) ---
     mass = (occupied.astype(np.float32) * np.float32(mass_per_atom))
 
-    return Lattice(occupied=occupied, atom_type=atom_type, spin=spin, mass=mass, moment=moment)
+    # --- cohesion: per-SITE bond stiffness from bond_energy -> melting point (M5). ---
+    # Defined on every cell (a previously-empty site can fill when occupancy goes thermal),
+    # so it is NOT masked by ``occupied``. Uniform for a root (one bond_energy); merge makes
+    # it a domain blend. T_m ∝ cohesion², so this is what sets a material's melting point.
+    cohesion_val = COH_LO + (COH_HI - COH_LO) * _clamp01(bond_energy)
+    cohesion = np.full(shape, np.float32(cohesion_val), dtype=np.float32)
+
+    return Lattice(
+        occupied=occupied, atom_type=atom_type, spin=spin,
+        mass=mass, moment=moment, cohesion=cohesion,
+    )
 
 
 def _clamp01(x: float) -> float:
@@ -273,8 +328,10 @@ def merge(
     spin = np.where(take_a, a.spin, b.spin).astype(np.int8)
     mass = np.where(take_a, a.mass, b.mass).astype(np.float32)
     moment = np.where(take_a, a.moment, b.moment).astype(np.float32)
+    cohesion = np.where(take_a, a.cohesion, b.cohesion).astype(np.float32)
     return Lattice(
-        occupied=occupied, atom_type=atom_type, spin=spin, mass=mass, moment=moment
+        occupied=occupied, atom_type=atom_type, spin=spin,
+        mass=mass, moment=moment, cohesion=cohesion,
     )
 
 
@@ -337,6 +394,53 @@ def checkerboard_colors(shape: tuple[int, ...]) -> tuple[np.ndarray, np.ndarray]
     return (parity == 0, parity == 1)
 
 
+def occupancy_sweep(
+    occ: np.ndarray,
+    cohesion: np.ndarray,
+    colors: tuple[np.ndarray, np.ndarray],
+    *,
+    coupling: float,
+    temperature: float,
+    mu: float,
+    gen: np.random.Generator,
+) -> np.ndarray:
+    """One deterministic checkerboard sweep of the **occupancy** field (M5 melting).
+
+    The positional twin of :func:`metropolis_sweep`: instead of flipping spins it
+    creates/annihilates atoms on a non-conserved **repulsive lattice gas**, the lattice model
+    whose order-disorder transition *is* crystalline melting. With ``n_i ∈ {0,1}`` and energy
+
+        E = Σ_⟨ij⟩ ε_ij n_i n_j  -  μ Σ_i n_i,     ε_ij = 4·coupling·cohesion_i·cohesion_j
+
+    (the *repulsive* sign ε>0 makes neighbours want to alternate → a checkerboard crystal at
+    half-filling; the 4 is the n=(s+1)/2 ↔ Ising mapping factor, :data:`_LATTICE_GAS_FACTOR`,
+    so ``coupling`` is in Ising units). Flipping ``n_i`` changes the energy by
+
+        dE_i = (1 - 2·n_i)·(4·coupling·cohesion_i·h_i  -  μ),   h_i = Σ_{j∈nbr} cohesion_j·n_j
+
+    ``μ`` is the chemical potential — the conjugate of *amount of matter*, i.e. the pressure
+    dial (M5 activates ``Conditions.pressure``). At the particle-hole-symmetric ``μ`` the mean
+    density holds at ½ across the transition, so positional order is lost at *fixed* density —
+    melting, not sublimation.
+
+    Checkerboard parity guarantees no two simultaneously-flipped cells are neighbours, so the
+    vectorised update equals a fixed sequential sweep; all acceptance randomness is from
+    ``gen`` (spec §6). Returns the updated occupancy array (uint8 {0,1}).
+    """
+    coh = np.asarray(cohesion, dtype=np.float64)
+    n = occ.astype(np.float64)
+    for color_mask in colors:
+        h = _neighbor_sum(coh * n)
+        # dE for flipping n_i (delta = +1 if empty -> consider filling, -1 if occupied).
+        delta = 1.0 - 2.0 * n
+        delta_e = delta * (_LATTICE_GAS_FACTOR * coupling * coh * h - mu)
+        r = gen.random(occ.shape)
+        accept = (delta_e <= 0) | (r < np.exp(np.minimum(-delta_e / temperature, 0.0)))
+        flip = accept & color_mask
+        n = np.where(flip, 1.0 - n, n)
+    return n.astype(np.uint8)
+
+
 def relax(
     lattice: Lattice,
     seed: int,
@@ -393,4 +497,5 @@ def relax(
         spin=spin,
         mass=lattice.mass,
         moment=lattice.moment,
+        cohesion=lattice.cohesion,
     )

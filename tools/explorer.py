@@ -6,7 +6,9 @@ good?" — and the explorer is how we *see* the property space before trusting i
 Commands: ``list`` / ``inspect`` (single element) and ``percolation-sweep`` (the
 threshold experiment) since M0; ``combine`` since M1; ``distribution`` (population view)
 since M2; ``magnetism-sweep`` (Ising transition) and ``connectivity-sweep`` (higher-order
-percolation transitions behind superconductivity) since M3.
+percolation transitions behind superconductivity) since M3; ``temperature-sweep`` (Curie
+point) and ``process-compare`` (synthesis trajectories) since M4; ``melting-sweep`` (the
+occupancy order-disorder / melting transition) since M5.
 
 Usage::
 
@@ -460,6 +462,104 @@ def _plot_temperature_sweep(temps, mags, caps, tc, label, out_dir: Path) -> Path
     return out_path
 
 
+def cmd_melting_sweep(args: argparse.Namespace) -> int:
+    """Sweep temperature for one material's OCCUPANCY; show ψ(T), C(T), ρ(T) and T_m (M5).
+
+    The positional twin of ``temperature-sweep`` (docs §4/§5): occupancy is a thermal
+    lattice gas, and its order-disorder transition *is* crystalline melting. The keystone is
+    visible here three ways at once — the staggered (sublattice) order parameter ψ collapses,
+    the heat-capacity peak (universal detector) lands at the same T, and the mean density ρ
+    stays pinned at ½ across it (order lost at *fixed* density → melting, not sublimation).
+    For a plain/uniform-cohesion material the peak sits at the textbook 2D point 2.269·J0·⟨c²⟩
+    with no free parameter. Pass one id for a root, two to combine first.
+    """
+    from engine import thermal
+
+    shape = tuple(args.shape) if args.shape else (64, 64)
+    reg = Registry(universe_seed=args.seed, shape=shape)
+    reg.add_element(args.a)
+    if args.b is not None:
+        reg.add_element(args.b)
+        mat = reg.combine(args.a, args.b)
+        label = f"combine({args.a}, {args.b})"
+    else:
+        mat = reg.get(args.a)
+        label = args.a
+    lat = mat.lattice
+
+    coh2 = float((np.asarray(lat.cohesion, dtype=float) ** 2).mean())
+    predicted = thermal.ISING_TC_2D * thermal.COHESION_J0 * coh2
+    lo = args.lo if args.lo is not None else 0.35 * predicted
+    hi = args.hi if args.hi is not None else 1.55 * predicted
+    temps = np.linspace(lo, hi, args.steps)
+    sweep = thermal.occupancy_temperature_sweep(
+        lat, temps, pressure=args.pressure,
+        burn_in=args.burn_in, n_samples=args.samples, sample_every=args.sample_every,
+    )
+    psis = np.array([s.staggered_order for s in sweep])
+    caps = np.array([s.heat_capacity for s in sweep])
+    rhos = np.array([s.mean_density for s in sweep])
+    peak_i = int(np.argmax(caps))
+    tm = float(temps[peak_i]) if psis.max() >= 0.30 else None
+
+    print(f"=== melting-sweep: {label} | seed={args.seed} shape={shape} ===")
+    print(f"mean cohesion = {float(np.asarray(lat.cohesion).mean()):.3f}   "
+          f"analytic T_m ~ 2.269*J0*<c^2> = {predicted:.3f}   pressure P={args.pressure}")
+    print(f"{'T':>6}  {'psi':>6}  {'rho':>6}  {'C':>8}  C-bar")
+    cmax = max(float(caps.max()), 1e-9)
+    for i, T in enumerate(temps):
+        bar = "#" * int(round(caps[i] / cmax * 40))
+        mark = "  <-- C peak (Tm)" if i == peak_i and tm is not None else ""
+        print(f"{T:6.3f}  {psis[i]:6.3f}  {rhos[i]:6.3f}  {caps[i]:8.4f}  {bar}{mark}")
+
+    if tm is None:
+        print("\nno melting point: the structure never develops sublattice order in this range.")
+    else:
+        below = psis[temps < tm]; above = psis[temps > tm]
+        lo_p = below.mean() if below.size else psis[0]
+        hi_p = above.mean() if above.size else psis[-1]
+        rho_span = float(rhos.max() - rhos.min())
+        print(
+            f"\nT_m = {tm:.3f} (heat-capacity peak). "
+            f"order parameter psi: {lo_p:.2f} below -> {hi_p:.2f} above "
+            f"=> {'COLLAPSES at Tm' if lo_p - hi_p > 0.3 else 'no clear collapse'}; "
+            f"density rho stays {'FIXED' if rho_span < 0.05 else 'NOT fixed'} "
+            f"(range {rho_span:.3f}) => crystalline melting, not sublimation."
+        )
+
+    if args.plot:
+        out = _plot_melting_sweep(temps, psis, caps, rhos, tm, label, Path(args.out))
+        print(f"\nsaved sweep plot -> {out}")
+    return 0
+
+
+def _plot_melting_sweep(temps, psis, caps, rhos, tm, label, out_dir: Path) -> Path:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "melting_sweep.png"
+    fig, ax1 = plt.subplots(figsize=(7, 5))
+    ax1.plot(temps, psis, "o-", color="seagreen", label="ψ (staggered/positional order)")
+    ax1.plot(temps, rhos, "^-", color="goldenrod", label="ρ (density — stays ~½)")
+    ax1.set_xlabel("temperature T")
+    ax1.set_ylabel("ψ  /  ρ")
+    ax1.set_ylim(-0.02, 1.02)
+    ax2 = ax1.twinx()
+    ax2.plot(temps, caps, "s--", color="crimson", label="C = Var(E)/(N·T²)")
+    ax2.set_ylabel("heat capacity C", color="crimson")
+    if tm is not None:
+        ax1.axvline(tm, color="k", ls=":", label=f"Tm (C peak) = {tm:.3f}")
+    ax1.set_title(f"Melting sweep (occupancy order-disorder) — {label}")
+    ax1.legend(loc="center left")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=120)
+    plt.close(fig)
+    return out_path
+
+
 def cmd_process_compare(args: argparse.Namespace) -> int:
     """Run several synthesis processes on one structure and compare the results (process layer).
 
@@ -511,6 +611,30 @@ def cmd_process_compare(args: argparse.Namespace) -> int:
         "\nread: slower cooling -> lower E/cell, larger domain, fewer walls; "
         "field-cool -> high remanence (the process payoff)."
     )
+
+    # --- M5: occupancy is thermal, so a process can also change a STRUCTURAL (non-magnetic)
+    # property. Cool under a high vs low chemical potential (pressure) -> different density.
+    from engine.process import Process, Stage
+    from engine.properties import microstructure as micro
+
+    def sinter(pressure: float, name: str) -> Process:
+        return Process(
+            (Stage(3.5, 3.5, 8, pressure=pressure),
+             Stage(3.5, 0.4, budget - 8, pressure=pressure)),
+            name=name, evolve_occupancy=True,
+        )
+
+    print(f"\n--- structural process-compare (M5: occupancy thermal) ---")
+    print(f"{'process':14s} {'density':>8} {'pos.order':>9}")
+    struct = []
+    for p in (sinter(+6.0, "sinter-dense"), sinter(0.0, "sinter-std"), sinter(-6.0, "sinter-porous")):
+        out = proc.run_process(lat, p, seed=mix(args.seed, p.signature()))
+        dens = out.fill_fraction
+        po = micro.positional_order(out)
+        struct.append((p.name, dens, po))
+        print(f"{p.name:14s} {dens:8.3f} {po:9.3f}")
+    print("read: cooling under higher pressure (mu) freezes in a denser solid "
+          "(density path-dependence -- the M5 structural payoff).")
 
     if args.plot:
         out = _plot_process_compare(results, label, Path(args.out))
@@ -832,6 +956,27 @@ def build_parser() -> argparse.ArgumentParser:
     p_tsweep.add_argument("--plot", action="store_true", help="save M(T)/C(T) plot")
     p_tsweep.add_argument("--out", default="out", help="output dir for plots")
     p_tsweep.set_defaults(func=cmd_temperature_sweep)
+
+    p_melt = sub.add_parser(
+        "melting-sweep",
+        help="sweep T for one material's occupancy; ψ(T), C(T), ρ(T) and the melting point (M5)",
+    )
+    p_melt.add_argument("a", help="element/material id (or first of two to combine)")
+    p_melt.add_argument("b", nargs="?", default=None, help="optional second id to combine")
+    p_melt.add_argument("--lo", type=float, default=None, help="min T (default auto-bracket)")
+    p_melt.add_argument("--hi", type=float, default=None, help="max T (default auto-bracket)")
+    p_melt.add_argument("--steps", type=int, default=16, help="number of temperatures")
+    p_melt.add_argument("--pressure", type=float, default=0.0, help="pressure dial P (μ offset)")
+    p_melt.add_argument("--burn-in", type=int, default=80, help="equilibration sweeps")
+    p_melt.add_argument("--samples", type=int, default=50, help="samples per temperature")
+    p_melt.add_argument("--sample-every", type=int, default=2, help="sweeps between samples")
+    p_melt.add_argument(
+        "--shape", type=int, nargs="+", default=None, help="lattice shape (default 64 64)"
+    )
+    p_melt.add_argument("--seed", type=int, default=0, help="UNIVERSE_SEED (default 0)")
+    p_melt.add_argument("--plot", action="store_true", help="save ψ(T)/C(T)/ρ(T) plot")
+    p_melt.add_argument("--out", default="out", help="output dir for plots")
+    p_melt.set_defaults(func=cmd_melting_sweep)
 
     p_proc = sub.add_parser(
         "process-compare",

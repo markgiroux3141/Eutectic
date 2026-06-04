@@ -13,10 +13,14 @@ lattice already has (docs §3):
   ensemble (M5).
 * **magnetic field ``H``** couples to magnetization via a ``-H·Σ(moment·spin)`` term in the
   Hamiltonian. Wired into the Ising engine in M4 (see :mod:`engine.thermal`).
-* **pressure ``P``** couples to the amount of matter (``occupied``). **INERT until M5** —
-  ``occupied`` is not yet a thermal degree of freedom, so ``P`` is carried here but changes
-  nothing measured. It is stored (not dropped) so the conditions type is stable across
-  milestones; this is flagged honestly rather than faked into having an effect now.
+* **pressure ``P``** couples to the amount of matter (``occupied``). **ACTIVE as of M5** —
+  ``occupied`` is now a thermal degree of freedom (the lattice-gas / melting ensemble), and
+  ``P`` enters as a chemical-potential offset ``μ = μ_sym + PRESSURE_TO_MU·P`` (see
+  :func:`engine.thermal.chemical_potential`): P>0 raises μ → favours occupancy → denser; the
+  standard P=0 sits at the particle-hole-symmetric μ (half-filling), where melting is clean.
+  Until M5 it was carried-but-inert (flagged honestly); it now changes measured density and
+  shifts the melting/percolation behaviour. (It remains inert for the *spin* ensemble — the
+  Curie measurement reads only ``T`` and ``H``.)
 
 Conditions are quantized when used to seed a measurement (:meth:`Conditions.seed_key`) so
 that ``measure(structure, conditions)`` is a *pure deterministic function* — measuring the

@@ -54,6 +54,27 @@ _CURIE_SAMPLES: int = 16
 _CURIE_SAMPLE_EVERY: int = 1
 _CURIE_SALT: int = 0x43           # 'C'
 
+# --- Melting temperature (M5): stored per-material, gated like Curie for cost -----------
+# Melting is the occupancy order-disorder transition (docs §4/§5) — an ensemble measurement
+# (a temperature sweep), as expensive as Curie. We gate it the same way: only a material that
+# presents a *connected solid* at standard conditions has a crystalline phase to melt, so the
+# sweep is gated behind the (already-measured) ``largest_cluster_fraction``. A dispersed /
+# gas-like structure (no spanning solid) gets melting_temperature = 0.0 ("no solid phase at
+# standard conditions"), skipping the sweep — so the porous minority cost nothing, exactly as
+# the non-magnetic majority cost nothing for Curie. Stored value is honestly *coarse* (lean
+# bracketed sweep); the explorer's `melting-sweep` gives the accurate curve. NB the gate is a
+# cost/solidity gate, not the transition locator — the C-peak is still what sets the value.
+MELT_GATE_FLOOR: float = 0.40     # largest-cluster fraction: below this, no connected solid
+# Bracket tight around the accurate analytic T_m ≈ 2.269·J0·⟨coh²⟩ (the de-risk showed the
+# prediction is good), so a few points give a usable grid. Deliberately lean — the stored Tm
+# is honestly *coarse* (like the stored Curie point); the explorer's `melting-sweep` gives the
+# accurate curve, and the keystone tests assert precision with their own rich sampling.
+_MELT_BRACKET: tuple[float, float] = (0.72, 1.28)
+_MELT_N_TEMPS: int = 7
+_MELT_BURN_IN: int = 18
+_MELT_SAMPLES: int = 14
+_MELT_SAMPLE_EVERY: int = 1
+
 # Sub-seed salts so merge and relax draw from independent streams off the same base seed.
 _MERGE_SALT = 0x4D  # 'M'
 _RELAX_SALT = 0x52  # 'R'
@@ -114,6 +135,31 @@ def curie_temperature(lattice: Lattice, reference_magnetism: float) -> float:
     return 0.0 if tc is None else tc
 
 
+def melting_temperature(lattice: Lattice, reference_solidity: float) -> float:
+    """Stored melting point: the occupancy ``C(T)`` peak, gated by solidity (M5, docs §4/§5).
+
+    Returns ``0.0`` when the material has no connected solid at standard conditions
+    (``reference_solidity < MELT_GATE_FLOOR`` — a dispersed/gas-like structure has no
+    crystalline phase to melt), skipping the expensive sweep. Otherwise runs the lean
+    bracketed occupancy sweep and returns the heat-capacity peak — the temperature the
+    staggered (positional) order collapses through, at fixed density. Deterministic: the
+    occupancy ensemble is seeded from the lattice signature + cohesion hash + quantized
+    conditions.
+
+    ``reference_solidity`` is passed in (rather than recomputed) so :func:`measure_properties`
+    reuses the ``largest_cluster_fraction`` it already measured.
+    """
+    if reference_solidity < MELT_GATE_FLOOR:
+        return 0.0
+    tm = thermal_mod.melting_point(
+        lattice,
+        n_temps=_MELT_N_TEMPS, bracket=_MELT_BRACKET,
+        burn_in=_MELT_BURN_IN, n_samples=_MELT_SAMPLES,
+        sample_every=_MELT_SAMPLE_EVERY,
+    )
+    return 0.0 if tm is None else tm
+
+
 def measure_properties(lattice: Lattice) -> dict[str, float]:
     """Run the available extractors on a settled lattice and quantize (spec §4.4, §6.4).
 
@@ -121,20 +167,24 @@ def measure_properties(lattice: Lattice) -> dict[str, float]:
     the percolation/conductivity family. M3 adds magnetism (Ising) and the
     resistance/superconductivity family (Laplacian + min-cut). M4 adds the Curie temperature
     ``curie_temperature`` — the first *condition-dependent* property, measured as an ensemble
-    observable (a temperature sweep) rather than read off the snapshot (docs §2). Every value
-    is measured from the structure, never assigned. M5+ extend further.
+    observable (a temperature sweep) rather than read off the snapshot (docs §2). M5 adds the
+    ``melting_temperature`` — the occupancy order-disorder point, the positional twin of Curie
+    (gated by solidity for cost). Every value is measured from the structure, never assigned.
+    M6+ extend further.
     """
     magnetism = ising.magnetism(lattice)
+    solidity = percolation.largest_cluster_fraction(lattice)
     props = {
         "fill_fraction": quantize(lattice.fill_fraction),
         "atomic_mass": quantize(scalar.mean_atomic_mass(lattice)),
         "density": quantize(scalar.density(lattice)),
         "conductivity": quantize(float(percolation.conductivity_boolean(lattice))),
         "spanning_fraction": quantize(percolation.spanning_fraction(lattice)),
-        "largest_cluster_fraction": quantize(percolation.largest_cluster_fraction(lattice)),
+        "largest_cluster_fraction": quantize(solidity),
         "net_spin": quantize(net_spin(lattice)),
         "magnetism": quantize(magnetism),
         "curie_temperature": quantize(curie_temperature(lattice, magnetism)),
+        "melting_temperature": quantize(melting_temperature(lattice, solidity)),
     }
     # Resistance / superconductivity: one per-axis solve, several derived values (§5.3-5.4).
     for key, value in conductance.measure(lattice).items():
