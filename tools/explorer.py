@@ -371,6 +371,180 @@ def _plot_connectivity_sweep(rows, ks, out_dir: Path) -> Path:
     return out_path
 
 
+def cmd_temperature_sweep(args: argparse.Namespace) -> int:
+    """Sweep temperature for one material; show M(T) and C(T) and the Curie point (M4).
+
+    The condition-as-measurement-axis view (docs §2/§4): a material *is* a structure, and we
+    measure its order parameter and heat capacity as the thermal ensemble's temperature
+    varies. The keystone is visible here — the heat-capacity peak (the universal transition
+    detector) lands exactly where the magnetization collapses. Pass one id for a root, two
+    to combine first.
+    """
+    from engine import thermal
+    from engine.properties import ising
+
+    shape = tuple(args.shape) if args.shape else (64, 64)
+    reg = Registry(universe_seed=args.seed, shape=shape)
+    reg.add_element(args.a)
+    if args.b is not None:
+        reg.add_element(args.b)
+        mat = reg.combine(args.a, args.b)
+        label = f"combine({args.a}, {args.b})"
+    else:
+        mat = reg.get(args.a)
+        label = args.a
+
+    ref_mag = ising.magnetism(mat.lattice)
+    temps = np.linspace(args.lo, args.hi, args.steps)
+    sweep = thermal.temperature_sweep(
+        mat.lattice, temps, field=args.field,
+        burn_in=args.burn_in, n_samples=args.samples, sample_every=args.sample_every,
+    )
+    mags = np.array([s.mean_abs_mag for s in sweep])
+    caps = np.array([s.heat_capacity for s in sweep])
+    peak_i = int(np.argmax(caps))
+    tc = float(temps[peak_i]) if mags.max() >= 0.30 else None
+
+    print(f"=== temperature-sweep: {label} | seed={args.seed} shape={shape} ===")
+    print(f"reference magnetism (at standard T0): {ref_mag:.3f}   field H={args.field}")
+    print(f"{'T':>6}  {'<|M|>':>6}  {'C':>8}  C-bar")
+    cmax = max(float(caps.max()), 1e-9)
+    for i, T in enumerate(temps):
+        bar = "#" * int(round(caps[i] / cmax * 40))
+        mark = "  <-- C peak (Tc)" if i == peak_i and tc is not None else ""
+        print(f"{T:6.3f}  {mags[i]:6.3f}  {caps[i]:8.4f}  {bar}{mark}")
+
+    if tc is None:
+        print("\nno Curie point: the material never orders over this range (paramagnet).")
+    else:
+        # The keystone check, surfaced: does |M| collapse at the C peak?
+        below = mags[temps < tc]
+        above = mags[temps > tc]
+        lo_m = below.mean() if below.size else mags[0]
+        hi_m = above.mean() if above.size else mags[-1]
+        print(
+            f"\nTc = {tc:.3f} (heat-capacity peak). "
+            f"order parameter: <|M|>={lo_m:.2f} below -> {hi_m:.2f} above "
+            f"=> {'COLLAPSES at Tc (keystone holds)' if lo_m - hi_m > 0.3 else 'no clear collapse'}"
+        )
+
+    if args.plot:
+        out = _plot_temperature_sweep(temps, mags, caps, tc, label, Path(args.out))
+        print(f"\nsaved sweep plot -> {out}")
+    return 0
+
+
+def _plot_temperature_sweep(temps, mags, caps, tc, label, out_dir: Path) -> Path:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "temperature_sweep.png"
+    fig, ax1 = plt.subplots(figsize=(7, 5))
+    ax1.plot(temps, mags, "o-", color="steelblue", label="⟨|M|⟩ (order parameter)")
+    ax1.set_xlabel("temperature T")
+    ax1.set_ylabel("⟨|M|⟩", color="steelblue")
+    ax1.set_ylim(-0.02, 1.02)
+    ax2 = ax1.twinx()
+    ax2.plot(temps, caps, "s--", color="crimson", label="C = Var(E)/(N·T²)")
+    ax2.set_ylabel("heat capacity C", color="crimson")
+    if tc is not None:
+        ax1.axvline(tc, color="k", ls=":", label=f"Tc (C peak) = {tc:.3f}")
+    ax1.set_title(f"Temperature sweep — {label}")
+    ax1.legend(loc="lower left")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=120)
+    plt.close(fig)
+    return out_path
+
+
+def cmd_process_compare(args: argparse.Namespace) -> int:
+    """Run several synthesis processes on one structure and compare the results (process layer).
+
+    The same ingredients, processed differently (anneal-slow / anneal-fast / quench /
+    field-cool), settle into measurably different magnetic structures. This is the
+    "wrong process = different material" view: remanence (net ⟨|M|⟩ retained), domain size,
+    domain-wall density, and energy/cell all move with the cooling history. Pass one id for a
+    root, two to combine first.
+    """
+    from engine import process as proc, thermal
+    from engine.properties import ising, microstructure
+    from engine.rng import mix
+
+    shape = tuple(args.shape) if args.shape else (64, 64)
+    reg = Registry(universe_seed=args.seed, shape=shape)
+    reg.add_element(args.a)
+    if args.b is not None:
+        reg.add_element(args.b)
+        mat = reg.combine(args.a, args.b)
+        label = f"combine({args.a}, {args.b})"
+    else:
+        mat = reg.get(args.a)
+        label = args.a
+    lat = mat.lattice
+    n_active = max(int((lat.occupied == 1).sum()), 1)
+
+    budget = args.budget
+    processes = [
+        proc.anneal(budget=budget, name="anneal-slow"),
+        proc.anneal(budget=budget, ramp_sweeps=max(budget // 6, 4), name="anneal-fast"),
+        proc.quench(budget=budget, name="quench"),
+        proc.field_cool(budget=budget, field=args.field, name="field-cool"),
+    ]
+
+    print(f"=== process-compare: {label} | seed={args.seed} shape={shape} budget={budget} ===")
+    print(f"reference magnetism (default settle): {mat.properties['magnetism']:.3f}")
+    print(f"{'process':12s} {'remanence':>9} {'domain':>7} {'walls':>6} {'E/cell':>8}")
+    results = []
+    for p in processes:
+        out = proc.run_process(lat, p, seed=mix(args.seed, p.signature()))
+        rem = ising.magnetism(out)
+        dom = microstructure.domain_fraction(out)
+        wall = microstructure.domain_wall_density(out)
+        e = thermal.energy(out, out.spin) / n_active
+        results.append((p.name, out, rem, dom, wall, e))
+        print(f"{p.name:12s} {rem:9.3f} {dom:7.3f} {wall:6.3f} {e:8.3f}")
+
+    print(
+        "\nread: slower cooling -> lower E/cell, larger domain, fewer walls; "
+        "field-cool -> high remanence (the process payoff)."
+    )
+
+    if args.plot:
+        out = _plot_process_compare(results, label, Path(args.out))
+        print(f"\nsaved spin-structure plot -> {out}")
+    return 0
+
+
+def _plot_process_compare(results, label, out_dir: Path) -> Path:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "process_compare.png"
+    fig, axes = plt.subplots(1, len(results), figsize=(4 * len(results), 4))
+    axes = np.atleast_1d(axes).ravel()
+    for ax, (name, out, rem, dom, wall, e) in zip(axes, results):
+        spin = out.spin
+        if out.dim == 3:
+            spin = spin[spin.shape[0] // 2]
+        # show spin only on occupied cells (empty -> neutral gray via masked display)
+        disp = np.where(out.occupied if out.dim == 2 else out.occupied[out.shape[0] // 2],
+                        spin, 0)
+        ax.imshow(disp, interpolation="nearest", cmap="coolwarm", vmin=-1, vmax=1)
+        ax.set_title(f"{name}\nrem={rem:.2f} dom={dom:.2f}")
+        ax.axis("off")
+    fig.suptitle(f"Spin microstructure by process — {label}")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=120)
+    plt.close(fig)
+    return out_path
+
+
 def _print_properties(props: dict) -> None:
     for key in sorted(props):
         print(f"  {key:24s} {props[key]}")
@@ -491,6 +665,20 @@ def cmd_distribution(args: argparse.Namespace) -> int:
         f"{((mag >= 0.15) & (mag <= 0.5)).mean()*100:.1f}% in-between "
         f"(empty middle => critical transition)"
     )
+
+    # Curie temperature (M4): the condition-dependent property — Tc>0 only where ordered.
+    tc = np.asarray(series["curie_temperature"])
+    has_tc = tc > 0
+    if has_tc.any():
+        tc_vals = tc[has_tc]
+        print(
+            f"curie point:  {has_tc.mean()*100:.1f}% have a Tc>0 "
+            f"(ferromagnetic at standard conditions); "
+            f"Tc range {tc_vals.min():.2f}-{tc_vals.max():.2f}, median {np.median(tc_vals):.2f} "
+            f"(rest are paramagnets => Tc=0)"
+        )
+    else:
+        print("curie point:  none in this sample (no ferromagnets drawn)")
 
     # Superconductivity (spec §5.4): spanning AND k-edge-connected (loss-free backbone).
     from engine.properties.conductance import required_connectivity
@@ -621,6 +809,45 @@ def build_parser() -> argparse.ArgumentParser:
     p_csweep.add_argument("--plot", action="store_true", help="save a matplotlib plot")
     p_csweep.add_argument("--out", default="out", help="output dir for plots")
     p_csweep.set_defaults(func=cmd_connectivity_sweep)
+
+    p_tsweep = sub.add_parser(
+        "temperature-sweep",
+        help="sweep T for one material; show M(T), C(T) and the Curie point (M4 keystone)",
+    )
+    p_tsweep.add_argument("a", help="element/material id (or first of two to combine)")
+    p_tsweep.add_argument("b", nargs="?", default=None, help="optional second id to combine")
+    p_tsweep.add_argument("--lo", type=float, default=1.0, help="min temperature")
+    p_tsweep.add_argument("--hi", type=float, default=4.0, help="max temperature")
+    p_tsweep.add_argument("--steps", type=int, default=16, help="number of temperatures")
+    p_tsweep.add_argument("--field", type=float, default=0.0, help="magnetic field H")
+    p_tsweep.add_argument("--burn-in", type=int, default=80, help="equilibration sweeps")
+    p_tsweep.add_argument("--samples", type=int, default=50, help="samples per temperature")
+    p_tsweep.add_argument(
+        "--sample-every", type=int, default=2, help="sweeps between samples"
+    )
+    p_tsweep.add_argument(
+        "--shape", type=int, nargs="+", default=None, help="lattice shape (default 64 64)"
+    )
+    p_tsweep.add_argument("--seed", type=int, default=0, help="UNIVERSE_SEED (default 0)")
+    p_tsweep.add_argument("--plot", action="store_true", help="save M(T)/C(T) plot")
+    p_tsweep.add_argument("--out", default="out", help="output dir for plots")
+    p_tsweep.set_defaults(func=cmd_temperature_sweep)
+
+    p_proc = sub.add_parser(
+        "process-compare",
+        help="run anneal/quench/field-cool on one structure; compare the microstructures",
+    )
+    p_proc.add_argument("a", help="element/material id (or first of two to combine)")
+    p_proc.add_argument("b", nargs="?", default=None, help="optional second id to combine")
+    p_proc.add_argument("--budget", type=int, default=120, help="total sweeps per process")
+    p_proc.add_argument("--field", type=float, default=0.5, help="field-cool field H")
+    p_proc.add_argument(
+        "--shape", type=int, nargs="+", default=None, help="lattice shape (default 64 64)"
+    )
+    p_proc.add_argument("--seed", type=int, default=0, help="UNIVERSE_SEED (default 0)")
+    p_proc.add_argument("--plot", action="store_true", help="save spin-microstructure plot")
+    p_proc.add_argument("--out", default="out", help="output dir for plots")
+    p_proc.set_defaults(func=cmd_process_compare)
 
     p_comb = sub.add_parser("combine", help="combine two materials and inspect the child")
     p_comb.add_argument("a", help="first element/material id")

@@ -113,6 +113,25 @@ def test_superconductors_are_a_thin_rare_tail():
     assert ((sc > 0.5) == (ec >= k)).all(), "superconductor flag != k-edge-connectivity"
 
 
+def test_curie_temperature_is_gated_by_order():
+    """Stored Tc (M4) is >0 exactly for materials magnetic at standard conditions.
+
+    The condition-dependent property must respect its gate (docs §2): a Curie point exists
+    only where there is ferromagnetic order to lose. So every Tc>0 material clears the order
+    floor, every Tc==0 material is below it, and the ordered tail is non-empty.
+    """
+    from engine.material import CURIE_GATE_FLOOR
+
+    children = _population()
+    tc = np.array([c.properties["curie_temperature"] for c in children])
+    mag = np.array([c.properties["magnetism"] for c in children])
+    assert (tc > 0).any(), "no material has a Curie point"
+    assert (mag[tc > 0] >= CURIE_GATE_FLOOR).all(), "a Tc>0 material is not ordered"
+    assert (mag[tc == 0] < CURIE_GATE_FLOOR).all(), "an ordered material has no Tc"
+    # Curie points are physically sensible: above standard T0, below the dense-coupling cap.
+    assert tc[tc > 0].min() >= 1.0 and tc.max() <= 4.0
+
+
 def test_continuous_conductivity_tracks_boolean():
     """1/resistance is >0 exactly when the boolean percolation says it spans (consistency)."""
     children = _population()

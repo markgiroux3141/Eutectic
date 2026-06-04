@@ -291,6 +291,52 @@ def _neighbor_sum(field: np.ndarray) -> np.ndarray:
     return total
 
 
+def metropolis_sweep(
+    spin: np.ndarray,
+    moment: np.ndarray,
+    occ: np.ndarray,
+    colors: tuple[np.ndarray, np.ndarray],
+    *,
+    coupling: float,
+    temperature: float,
+    field: float,
+    gen: np.random.Generator,
+) -> np.ndarray:
+    """One deterministic checkerboard Metropolis sweep of the spin field.
+
+    The single shared spin-update kernel: :func:`relax` (M3 settling) and
+    :func:`engine.thermal.sample_ensemble` (M4 ensemble measurement) both call this, so the
+    dynamics are defined in exactly one place. Returns the updated ``spin`` array.
+
+    With ``J_ij = coupling·moment_i·moment_j`` and a uniform field ``H = field`` coupling as
+    ``-H·Σ moment·spin``, flipping ``s_i`` changes the energy by
+    ``dE_i = 2·moment_i·s_i·(coupling·h_i + H)`` where ``h_i = Σ_{j∈nbr} moment_j·s_j``.
+
+    The bond and field terms are summed in the order ``coupling·h + field`` *expanded*
+    (``2·coupling·s·m·h + 2·field·s·m``) so that the ``field == 0`` path is bit-for-bit the
+    expression M3's :func:`relax` used — the determinism gate guards this. Each colour of the
+    checkerboard updates simultaneously: no two updated cells are neighbours, so the
+    vectorised flip equals a fixed sequential sweep (spec §6).
+    """
+    for color_mask in colors:
+        h = _neighbor_sum(moment * spin)
+        # Expanded so field==0 reproduces relax's original `2.0*coupling*spin*m*h` exactly
+        # (adding 0.0 is an identity on finite floats); field!=0 adds the conjugate term.
+        delta_e = 2.0 * coupling * spin * moment * h + 2.0 * field * spin * moment
+        r = gen.random(spin.shape)
+        # exponent capped at 0 so dE<=0 never overflows exp; those flip unconditionally.
+        accept = (delta_e <= 0) | (r < np.exp(np.minimum(-delta_e / temperature, 0.0)))
+        update = accept & color_mask & occ
+        spin = np.where(update, -spin, spin).astype(np.int8)
+    return spin
+
+
+def checkerboard_colors(shape: tuple[int, ...]) -> tuple[np.ndarray, np.ndarray]:
+    """The two-colour (parity-of-summed-coordinates) masks used by the spin update."""
+    parity = np.indices(shape).sum(axis=0) % 2
+    return (parity == 0, parity == 1)
+
+
 def relax(
     lattice: Lattice,
     seed: int,
@@ -331,21 +377,14 @@ def relax(
     m = np.asarray(lattice.moment, dtype=np.float64) * occ
     gen = SplitMix64(seed).numpy_generator()
 
-    # Two-colour (checkerboard) masks: parity of the summed coordinates.
-    parity = np.indices(lattice.shape).sum(axis=0) % 2
-    colors = (parity == 0, parity == 1)
+    colors = checkerboard_colors(lattice.shape)
 
+    # Settling is burn-in only: a fixed number of zero-field sweeps of the shared kernel.
     for _ in range(steps):
-        for color_mask in colors:
-            # Local field h_i = sum_j (m_j * s_j); with J_ij = J0*m_i*m_j the energy change
-            # on flipping s_i -> -s_i is dE_i = 2 * J0 * s_i * m_i * h_i.
-            h = _neighbor_sum(m * spin)
-            delta_e = 2.0 * coupling * spin * m * h
-            r = gen.random(lattice.shape)
-            # exponent capped at 0 so dE<=0 never overflows exp; those flip unconditionally.
-            accept = (delta_e <= 0) | (r < np.exp(np.minimum(-delta_e / temperature, 0.0)))
-            update = accept & color_mask & occ
-            spin = np.where(update, -spin, spin).astype(np.int8)
+        spin = metropolis_sweep(
+            spin, m, occ, colors,
+            coupling=coupling, temperature=temperature, field=0.0, gen=gen,
+        )
 
     spin = np.where(occ, spin, 1).astype(np.int8)
     return Lattice(

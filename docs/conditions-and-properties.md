@@ -153,11 +153,30 @@ works.
 Do these in order; the conditions layer gates everything. Each is shippable, tested, and
 demo'd in the explorer before moving on.
 
-- **M4 — Conditions & thermodynamic state (the enabler).** Introduce `Conditions(T, P, H)`.
-  Make property extractors measure from an ensemble at conditions; store a reference
-  snapshot at standard conditions for legibility. **Keystone validation:** first-class
-  magnetism(T)/Curie point + **heat capacity as a universal transition detector** (confirm
-  C(T) peaks at the Curie point). Determinism preserved; M2/M3 stay green.
+- **M4 — Conditions & thermodynamic state (the enabler). ✅ DONE.** `engine/conditions.py`
+  introduces `Conditions(T, P, H)` (P inert until M5, flagged honestly); `engine/thermal.py`
+  is the ensemble engine — it measures observables (`⟨|M|⟩`, energy, **heat capacity
+  `C = Var(E)/(N·T²)`**) from a structure's spin Hamiltonian at conditions, reusing one
+  shared deterministic Metropolis kernel (`engine.lattice.metropolis_sweep`) for both M3
+  settling and M4 measurement. Field `H` is wired as the conjugate `-H·Σ(moment·spin)` term.
+  `curie_temperature` is stored on every Material (gated by reference order so the
+  non-magnetic majority cost nothing). Explorer gains `temperature-sweep`. Determinism
+  preserved; M2/M3 stay green (91→92 tests).
+  - **Keystone validation (rigorous, parameter-free):** a fully-occupied unit-moment lattice
+    is plain 2D Ising → `C(T)` peaks at the textbook `Tc = 2/ln(1+√2) ≈ 2.269`, and the
+    order parameter `⟨|M|⟩` collapses at that exact temperature. The C-peak ↔ M-collapse ↔
+    textbook three-way agreement (`tests/test_thermal.py`) is the proof the
+    measure-at-conditions architecture works. **We did not proceed past this.**
+  - **Honest scope (the no-fudge findings):** (1) the *clean, sharp* transition is the full
+    lattice; **real site-diluted materials show a physically broadened transition** (dilution
+    near percolation smears it — iron/cobalt/nickel high-quality C-peaks land at ~1.8/1.6/1.5,
+    a real ordering but a *broad* one). So a single per-material `Tc` is inherently an
+    approximate midpoint. (2) The **stored** Tc uses a lean sweep (cost-gated) and is
+    therefore *coarse* (~±0.3 vs the high-quality C-peak); the explorer's `temperature-sweep`
+    with high sampling gives the accurate curve. (3) We checked an order-parameter
+    steepest-descent locator as a cheaper Tc and **rejected it** — it is biased low (~1.3 for
+    all three ferromagnets, catching the saturation roll-off, not the fluctuation peak), so
+    the heat-capacity peak remains the canonical detector.
 - **M5 — Thermal occupancy.** Make `occupied` thermal (non-conserved + pressure/μ). Falls
   out: melting point, thermal expansion, density(T,P), pressure-tuned conductivity.
   Re-validate M2/M3 under the new dynamics.
@@ -170,6 +189,35 @@ demo'd in the explorer before moving on.
 Then the spec's machine layer (motor) and game shell follow.
 
 ---
+
+## 7b. The process layer — synthesis as a *trajectory* through conditions-space
+
+A `Conditions` is a *point* in dial-space; a **process** is a *path* through it. Today
+`combine` settles at one fixed point (`relax` at `T0`). The process layer
+(`engine/process.py`, Step 1 done) generalises this: a `Process` is an ordered list of
+`Stage`s (hold/ramp `T`, with field `H`, over N sweeps), and `run_process` carries the live
+spin state along that schedule using the *same* kernel `relax` uses
+(`engine.lattice.metropolis_sweep`). A single constant-`T` hold reproduces `relax`
+byte-for-byte (`STANDARD_PROCESS`), so this is a strict generalisation; `combine`/`from_element`
+take an optional `process=`.
+
+This is where real-world synthesis complexity lives (anneal/quench/field-cool, sequence,
+catalysts) — and it stays inside the One Principle: the process shapes the **structure**;
+properties are still measured from the result. "Wrong process = different material" is a
+*measured* microstructure consequence, not a hidden gate.
+
+**Validated (Step 0 de-risk → Step 1 tests):** slower cooling reaches lower-energy,
+larger-domain structures (monotonic); field-cooling builds remanence (`≈0.97` vs `≈0.1`). Key
+finding: net `|M|` at `H=0` is a *poor* process readout (random domain sign cancels) — the
+signal is in **microstructure** (`engine/properties/microstructure.py`) and field-remanence.
+
+**Sequencing:** at the spin level this is *magnetic-microstructure* path-dependence only.
+The dramatic multi-property version (melting/grain growth/amorphous-vs-crystalline,
+martensite-style quench hardening) arrives when **M5** makes `occupied` thermal — and M5's
+dynamics plug into this same executor. The hard-magnet payoff (coercivity) needs a separate,
+de-risked **anisotropy + hysteresis** block. Open: a process is not yet part of material
+identity (caching by process is a follow-up); pressure `P` rides on each `Stage` but is inert
+until M5.
 
 ## 8. Related parked idea
 

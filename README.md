@@ -18,7 +18,10 @@ engine/        deterministic, headless materials engine (never imports game/UI c
   elements.py    root element definitions + base lattice generation
   material.py    Material type + combine() pipeline (M1+)
   registry.py    discovered materials + lineage graph (M1+)
-  properties/    pure Lattice -> float extractors (M2+)
+  conditions.py  Conditions(T, P, H) — the structure/state separation (M4+)
+  thermal.py     thermal-ensemble engine: observables at conditions, Curie point (M4+)
+  process.py     synthesis as a trajectory: anneal/quench/field-cool schedules (process layer)
+  properties/    pure Lattice -> float extractors (M2+); microstructure.py = process readouts
 machines/      worked-example performance equations (M5+); consume Material.properties only
 tools/         explorer.py — distributions, single-material inspection, lattice render
 tests/         determinism + distribution tests (run in CI from M1)
@@ -48,7 +51,14 @@ Following the milestones in spec §11.
       the `distribution` view confirms magnetism is bimodal (disordered ↔ aligned) and
       superconductors are a thin ~2–3% tail conditional on conducting. See **M3 findings** below
       for the honest scope of each claim.
-- [ ] M4 — Remaining properties (band gap, mechanical).
+- [x] **M4 — Conditions & thermodynamic state** (the enabler; supersedes the old spec-§11 M4,
+      see `docs/conditions-and-properties.md`): `Conditions(T, P, H)` + `engine/thermal.py`, the
+      thermal-ensemble engine. Properties become **ensemble observables of a structure at
+      conditions** (`measure(structure, conditions)`), not frozen snapshot numbers. Curie
+      temperature is now a first-class, *measured* property (`temperature-sweep` explorer view).
+      **Keystone proven:** heat capacity `C(T) = Var(E)/(N·T²)` peaks at the textbook 2D-Ising
+      `Tc ≈ 2.269` (no free parameters) exactly where the order parameter collapses. See
+      **M4 findings** below for the honest scope (broadened dilute transitions; coarse stored Tc).
 
 ### M3 findings (what's genuinely emergent, and what isn't)
 
@@ -79,8 +89,81 @@ We pressure-tested M3 rather than just making the numbers look good. The honest 
   percentile, each k is a real transition, so the knob picks a transition, not a point on a
   smooth tail. We do **not** claim "no probability dial"; we claim a thin tail with a principled,
   topological criterion.
-- [ ] M5 — Machine layer (motor).
-- [ ] M6 — Game shell (separate effort).
+
+### M4 findings (the keystone, and the honest scope of a per-material Tc)
+
+M4 separated **structure** (the material — geometry + couplings) from **state** (a thermal
+configuration *at* conditions). A property is now an *ensemble observable*
+`measure(structure, conditions)`, not a frozen snapshot. We pressure-tested it the same way:
+
+- **Heat capacity as a universal transition detector — proven, parameter-free.** A
+  fully-occupied, unit-moment lattice is plain 2D Ising. Its heat capacity `C(T)=Var(E)/(N·T²)`
+  peaks at the textbook `Tc = 2/ln(1+√2) ≈ 2.269` (no fit, no knob), and the order parameter
+  `⟨|M|⟩` collapses at that *same* temperature. That C-peak ↔ M-collapse ↔ textbook three-way
+  coincidence is the proof the architecture works — we don't hand-define the Curie point; the
+  fluctuation peak *is* it. (`tests/test_thermal.py`; see it live with
+  `python -m tools.explorer temperature-sweep iron --plot`.)
+- **Real materials have *broadened* transitions — honest, and physically correct.** The sharp
+  clean peak is the full lattice. Site-diluted real materials (fill ~0.6, near percolation)
+  show a *smeared* transition: high-quality C-peaks land at ~1.8/1.6/1.5 for iron/cobalt/nickel
+  — a real ordering (correctly iron > cobalt > nickel), but a broad one. So a single
+  per-material `Tc` is inherently an approximate midpoint of a smeared transition, not a razor
+  edge. We say so rather than faking a crisp number.
+- **Stored Tc is coarse by design; the explorer is the accurate instrument.** Storing Tc on
+  every Material (a temperature sweep per material) is expensive, so it is **gated** by the
+  reference order parameter — a material has a Curie point only if it's ferromagnetic at
+  standard conditions, so the non-magnetic majority cost nothing (Tc=0). The stored value uses
+  a lean sweep and is therefore coarse (~±0.3 vs the high-quality C-peak); `temperature-sweep`
+  with high sampling gives the precise curve.
+- **Rejected a cheaper locator (reported, not buried).** We tried locating Tc from the
+  order-parameter's steepest descent (cheaper, smoother). It is *biased low* (~1.3 for all
+  three ferromagnets — it catches the saturation roll-off, not the transition) and disagrees
+  with the C-peak by up to 0.5. So the heat-capacity peak stays the canonical detector.
+
+### Process layer findings (synthesis as a trajectory, Step 1)
+
+Real materials are process-sensitive (neodymium magnets, quench-hardened steel): the *same*
+ingredients yield different materials depending on temperature schedule, field, and sequence.
+We capture this without new machinery — it's the existing relaxation kernel
+(`engine.lattice.metropolis_sweep`) carried along a *schedule* of conditions instead of one
+fixed-T settle. A `Process` is an ordered list of `Stage`s; `run_process` threads the live
+spin state through them. The One Principle holds: the process shapes the *structure*;
+properties are still measured (spec §1).
+
+- **Path-dependence is real and monotonic (de-risked, then encoded as tests).** Slower
+  cooling reaches a **lower-energy, larger-domain, fewer-domain-wall** structure than a quench
+  — clean and monotonic across seeds (`tests/test_process.py`). Try it:
+  `python -m tools.explorer process-compare iron chromium`.
+- **The readout matters — `|M|` at zero field is the *wrong* one.** At `H=0` the 2D Ising
+  picks a random domain sign and the net cancels, so annealed and quenched magnets both read
+  `|M|≈0.1`. The cooling-rate signal lives in **microstructure** (`engine/properties/microstructure.py`:
+  `domain_fraction`, `domain_wall_density`) and, under a field, in **remanence**. We measure
+  those, not just net moment.
+- **Field-cooling is the first dramatic "process payoff."** Cooling under a field then removing
+  it leaves a near-single-domain magnet (`remanence ≈ 0.97`) versus `~0.1` for zero-field
+  cooling — the neodymium preview. Honest caveat: with isotropic Ising this is *kinetic*
+  remanence (low-T freezing), not *coercive* remanence; true hard-magnet behaviour needs the
+  anisotropy + hysteresis block (a later, separately de-risked milestone).
+- **Scope (honest).** At the spin level we get **magnetic-microstructure** path-dependence only
+  (occupancy is frozen, so density/percolation don't move). The dramatic multi-property version
+  (martensite, glass-vs-crystal, grain growth) arrives when **M5** makes `occupied` thermal —
+  which plugs into this same executor. Also: a process is **not** part of a material's identity
+  yet (id derives from lineage only), so registry-caching by process is a follow-up.
+
+- [x] **Process layer (Step 1)** — synthesis as a *trajectory through conditions-space*
+      (`engine/process.py`): the same ingredients, **annealed vs. quenched vs. field-cooled**,
+      settle into measurably different structures. Generalises `relax()` (a single constant-T
+      hold *is* a relax — `STANDARD_PROCESS` reproduces it byte-for-byte); `combine`/`from_element`
+      take an optional `process=`. Properties still *measured* from the result (spec §1):
+      "wrong process = different material" is a legible microstructure consequence, not a gate.
+      See **Process layer findings** below.
+- [ ] M5 — Thermal occupancy: make `occupied` thermal → melting, thermal expansion,
+      density(T,P), pressure-tuned conductivity. **Plugs into the same process executor** — the
+      moment atomic structure becomes dynamic, anneal/quench gain density/grain effects.
+      Re-validate M2/M3 under the new dynamics.
+- [ ] M6 — Transport + honest superconductivity (phase-coherence XY → real Tc; retire the
+      static SC proxy). · M7 — Spectral (band gap). · M8 — Mechanical (strength/ductility).
+- [ ] Machine layer (motor) + game shell follow (spec §8, §11).
 
 ## Running
 
@@ -96,6 +179,15 @@ python -m tools.explorer percolation-sweep --plot
 
 # See the magnetism critical transition (Ising order parameter vs coupling)
 python -m tools.explorer magnetism-sweep --plot
+
+# M4 keystone: sweep temperature for a material; M(T), C(T), and the Curie point
+# (heat-capacity peak coincides with the order-parameter collapse). One id, or two to combine.
+python -m tools.explorer temperature-sweep iron --plot
+python -m tools.explorer temperature-sweep iron copper --hi 3.0
+
+# Process layer: same ingredients, different synthesis (anneal/quench/field-cool) ->
+# different microstructure. Field-cool builds remanence (the "process payoff").
+python -m tools.explorer process-compare iron chromium --plot
 
 # See the higher-order percolation transitions superconductivity rides (P(min-cut>=k) vs fill)
 python -m tools.explorer connectivity-sweep --plot
