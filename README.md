@@ -19,8 +19,8 @@ engine/        deterministic, headless materials engine (never imports game/UI c
   material.py    Material type + combine() pipeline (M1+)
   registry.py    discovered materials + lineage graph (M1+)
   conditions.py  Conditions(T, P, H) — the structure/state separation (M4+); P live (M5)
-  thermal.py     thermal-ensemble engine: spin observables + Curie (M4); occupancy observables
-                 + melting point (M5)
+  thermal.py     thermal-ensemble engine: spin + Curie (M4); occupancy + melting (M5);
+                 XY phase coherence + superconducting Tc (M6)
   process.py     synthesis as a trajectory: anneal/quench/field-cool; optional occupancy evolution (M5)
   properties/    pure Lattice -> float extractors (M2+); microstructure.py = process readouts
                  (domain/positional order); cohesion field on the lattice drives melting (M5)
@@ -152,6 +152,38 @@ properties are still measured (spec §1).
   which plugs into this same executor. Also: a process is **not** part of a material's identity
   yet (id derives from lineage only), so registry-caching by process is a follow-up.
 
+### M6 findings (honest superconductivity via phase coherence; the static proxy retired)
+
+M6a replaced the static superconductivity proxy with real phase-coherence physics — de-risked
+on the BKT keystone first, then pressure-tested.
+
+- **Superconductivity as XY/BKT phase coherence — a real, parameter-free Tc.** A conducting
+  backbone carries an XY phase field (`engine.lattice.xy_sweep`); the **helicity modulus** Υ(T)
+  (phase/superconducting stiffness) is the order parameter. A fully-conducting lattice coheres at
+  the textbook 2D-XY `T_BKT = 0.893·J` — located as the crossing of Υ(T) with the universal line
+  `Υ = (2/π)·T`, no free parameter. Tc **emerges from structure**: a redundant solid backbone
+  coheres up to ~0.89, a thin near-percolation filament barely coheres (Tc→0). So the
+  k-edge-connectivity work becomes the *coupling input* (a redundant backbone is phase-stiff →
+  higher Tc), not the label. (`tests/test_superconductivity.py`; `tools.explorer sc-sweep`.)
+- **The BKT subtlety we respected (no-fudge).** Unlike Curie (M4) and melting (M5), the
+  **heat-capacity peak does NOT mark Tc** — for 2D XY the C-peak sits *above* `T_BKT` (~1.04 vs
+  0.893). The universal C-peak detector that nailed those transitions explicitly *fails* here; we
+  prove it in a test and use the helicity-modulus crossing instead. Reporting where the old method
+  breaks is the norm, not the exception.
+- **Why SC is measured on-demand, not stored on every material (an honest cost call).** XY/BKT
+  suffers critical slowing-down: the helicity modulus needs long equilibration (burn ≈ 300+) to
+  converge, paid by *every conductor* (~65% of materials) — unlike the fast-equilibrating Ising
+  Curie point, paid only by the ~10% ferromagnets. A leaned, cheap sweep gives an
+  *under-equilibrated, burn-in-sensitive* number (we measured the swing — an apparent rate of 7.5%
+  at burn 120 vs 28% at burn 70, i.e. not converged), which the no-fudge norm forbids storing. So
+  the precise Tc is an on-demand instrument (explorer `sc-sweep`, where proper equilibration is
+  affordable) validated by the keystone tests; materials store `edge_connectivity` as its
+  structural input. A fast XY cluster update (Wolff) would make a stored Tc cheap — a later option.
+- **Proxy retired.** The old `superconductor` flag (k-edge-connectivity ≥ k at fixed conditions,
+  no real Tc) is gone from the measured properties; `conductance.py` keeps the genuinely-structural
+  effective resistance + edge-connectivity (relabelled as backbone redundancy). Supersedes
+  `superconductivity-status`.
+
 ### M5 findings (crystalline melting falls out, and its honest scope)
 
 M5 made `occupied` thermal and asked melting to *emerge* — pressure-tested the same way as M4.
@@ -213,8 +245,17 @@ M5 made `occupied` thermal and asked melting to *emerge* — pressure-tested the
       `T_m = 2.269·J0·⟨coh²⟩` exactly where the staggered order collapses, *at fixed density ½*
       (crystalline melting, not sublimation). See **M5 findings** below and
       `python -m tools.explorer melting-sweep iron --plot`.
-- [ ] M6 — Transport + honest superconductivity (phase-coherence XY → real Tc; retire the
-      static SC proxy). · M7 — Spectral (band gap). · M8 — Mechanical (strength/ductility).
+- [x] **M6a — Honest superconductivity (phase coherence → real Tc).** Replaced the static
+      k-edge-connectivity proxy with an **XY model** on the conducting backbone
+      (`engine.lattice.xy_sweep`): the helicity modulus Υ(T) (phase stiffness) is the order
+      parameter, and the superconducting `Tc` is *measured* as the **BKT universal-line crossing**
+      `Υ = (2/π)·T` (`engine.thermal.superconducting_tc`). **Keystone proven, parameter-free:** a
+      fully-conducting lattice coheres at the textbook 2D-XY `T_BKT = 0.893·J`, and Tc emerges
+      from backbone structure (redundant → high Tc, thin filament → ~0). The static
+      `superconductor` proxy is **retired**; SC is measured on demand (explorer `sc-sweep`) — see
+      **M6 findings**. `python -m tools.explorer sc-sweep iron copper --plot`.
+- [ ] M6b — Thermal conductivity (reuse the Laplacian; `atom_type`-gated phonon/electronic
+      carriers → Wiedemann–Franz-like). · M7 — Spectral (band gap). · M8 — Mechanical.
 - [ ] Machine layer (motor) + game shell follow (spec §8, §11).
 
 ## Running
@@ -248,8 +289,13 @@ python -m tools.explorer process-compare iron chromium --plot
 python -m tools.explorer melting-sweep iron --plot
 python -m tools.explorer melting-sweep tungsten --pressure 0.0
 
-# See the higher-order percolation transitions superconductivity rides (P(min-cut>=k) vs fill)
+# See the higher-order percolation transitions (backbone redundancy, the SC coupling input)
 python -m tools.explorer connectivity-sweep --plot
+
+# M6: honest superconductivity. Sweep T for a material's phase coherence -> helicity modulus
+# Y(T); Tc is where Y crosses the BKT universal line (2/pi)T (NOT the C-peak, which is above
+# it). A redundant backbone coheres hotter; a thin one barely coheres. Two ids combine first.
+python -m tools.explorer sc-sweep iron copper --plot
 
 # Population view: distributions over many random combinations (spec §7 checkpoint)
 python -m tools.explorer distribution --n 500 --plot

@@ -64,6 +64,20 @@ _CURIE_SALT: int = 0x43           # 'C'
 # the non-magnetic majority cost nothing for Curie. Stored value is honestly *coarse* (lean
 # bracketed sweep); the explorer's `melting-sweep` gives the accurate curve. NB the gate is a
 # cost/solidity gate, not the transition locator — the C-peak is still what sets the value.
+# --- Superconductivity (M6): an ON-DEMAND condition-dependent property, not a stored stat ----
+# Superconductivity is now *measured* phase coherence — the XY helicity modulus crossing the BKT
+# universal line, an emergent real Tc (engine.thermal.superconducting_tc) — replacing the retired
+# static k-edge-connectivity proxy. It is deliberately NOT stored on every Material: unlike the
+# fast-equilibrating Ising Curie point (paid only by the ~10% ferromagnets), the XY/BKT helicity
+# modulus suffers critical slowing-down and needs long equilibration (burn ≈ 300+) for every
+# conductor (~65% of materials). Storing it would either be ~2× the engine's cost or — if leaned —
+# an under-equilibrated, burn-in-sensitive number, which the no-fudge norm forbids. So the honest
+# choice: the precise Tc is measured on demand (the explorer's `sc-sweep`, where proper
+# equilibration is affordable) and validated by the keystone tests. The conducting-graph
+# ``edge_connectivity`` (still stored) is its structural *input* — a redundant backbone is
+# phase-stiff → higher Tc. (A fast XY cluster update, e.g. Wolff, would make a stored Tc cheap; a
+# later option — see README "M6 findings".)
+
 MELT_GATE_FLOOR: float = 0.40     # largest-cluster fraction: below this, no connected solid
 # Bracket tight around the accurate analytic T_m ≈ 2.269·J0·⟨coh²⟩ (the de-risk showed the
 # prediction is good), so a few points give a usable grid. Deliberately lean — the stored Tm
@@ -186,7 +200,10 @@ def measure_properties(lattice: Lattice) -> dict[str, float]:
         "curie_temperature": quantize(curie_temperature(lattice, magnetism)),
         "melting_temperature": quantize(melting_temperature(lattice, solidity)),
     }
-    # Resistance / superconductivity: one per-axis solve, several derived values (§5.3-5.4).
+    # Conducting-graph properties: one per-axis solve, several derived values (§5.3).
+    # ``edge_connectivity`` is the structural input to M6 superconductivity (a redundant backbone
+    # is phase-stiff -> higher Tc); the SC transition itself is measured on demand (engine.thermal
+    # / explorer `sc-sweep`), not stored here (see the SC note above).
     for key, value in conductance.measure(lattice).items():
         props[key] = quantize(value)
     return props

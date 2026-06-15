@@ -90,12 +90,16 @@ engine.
   (lattice gas + pressure/μ term). Positional order breaks above a critical T = melting.
 
 **Tier 2 — principled, but a genuinely new engine**
-- **superconductivity with a *real* Tc** — model as a **phase-coherence (XY) ordering**
-  transition on the conducting network (which is what SC physically is). Below Tc phases
-  lock → dissipationless; above → normal. Tc emerges from network structure; the existing
-  k-edge-connectivity work becomes the *coupling input*, not the label. Reuses Ising
-  machinery. **This is the honest replacement for the current static SC proxy** (see
-  `superconductivity-status` / README M3 findings).
+- **superconductivity with a *real* Tc — ✅ DONE (M6a).** Modelled as a **phase-coherence (XY)
+  ordering** on the conducting backbone (`engine.lattice.xy_sweep`): the helicity modulus Υ(T)
+  is the order parameter, and Tc is the **BKT universal-line crossing** `Υ=(2/π)·T`
+  (`engine.thermal.superconducting_tc`). A fully-conducting lattice recovers the textbook
+  `T_BKT=0.893·J` parameter-free; Tc emerges from backbone rigidity (k-edge-connectivity is the
+  *coupling input*, not the label). The static proxy is **retired**. Honest scope: the
+  heat-capacity peak does NOT mark a BKT Tc (it sits above it — the universal C-detector fails
+  here, and we use the stiffness crossing); and because XY/BKT equilibrates slowly for every
+  conductor, the precise Tc is **measured on demand** (explorer `sc-sweep`), not stored per
+  material. Supersedes `superconductivity-status` / README "M6 findings".
 - **band gap → conductor / semiconductor / insulator** — eigenvalues of a lattice
   Hamiltonian (spec §5.6); gap shrinks with T/P. New engine (`numpy.linalg.eigh`).
 - **strength / ductility / fracture** — rigidity of the bond graph; ductility = low-energy
@@ -202,8 +206,10 @@ demo'd in the explorer before moving on.
     filling (intrinsic to bonding, not the standard-conditions fill); stored value is coarse
     (lean sweep); the cooling-rate → grain-size process signal is weak (reported), so the process
     payoff is structural **density** under a pressure schedule. See README **M5 findings**.
-- **M6 — Transport + honest superconductivity.** Thermal conductivity (reuse the Laplacian);
-  superconductivity via phase-coherence (XY) → real Tc; retire/relabel the static SC proxy.
+- **M6 — Transport + honest superconductivity.** **M6a ✅ DONE:** superconductivity via
+  phase-coherence (XY/BKT) → real measured Tc (helicity-modulus universal-line crossing); static
+  proxy retired; on-demand (slow XY equilibration). **M6b (next):** thermal conductivity (reuse
+  the Laplacian; `atom_type`-gated phonon/electronic carriers → Wiedemann–Franz-like).
 - **M7 — Spectral.** Band gap → conductor/semiconductor/insulator (`eigh`).
 - **M8 — Mechanical.** Strength / ductility / fracture; confirm the strength↔ductility
   anti-correlation emerges.

@@ -85,32 +85,18 @@ def test_magnetism_shows_a_critical_transition():
     )
 
 
-def test_superconductors_are_a_thin_rare_tail():
-    """Superconductors are rare and *conditional on* conducting (the §5.4 double threshold).
-
-    The rarity is honest: superconductivity requires the backbone to span (threshold p_c)
-    AND be k-edge-connected (threshold p_k > p_c) — two real percolation transitions, so
-    requiring the second on top of the first yields a thin tail. We assert the tail is
-    non-empty but thin, that every superconductor also conducts (the second threshold sits
-    on the first), and that superconductors carry the high edge-connectivity that defines
-    them. (We do NOT claim "no probability dial" — the redundancy level k is the one knob;
-    see conductance.py / README "M3 findings".)
+def test_edge_connectivity_is_a_structural_spread():
+    """M6: superconductivity is no longer a stored flag (it is the on-demand phase-coherence Tc,
+    see tests/test_superconductivity.py). What the population stores is ``edge_connectivity`` —
+    the backbone redundancy that is the *structural input* to that Tc. It must span a real range:
+    insulators at 0, conductors carrying a spread of redundancies (the would-be high-Tc tail).
     """
-    from engine.properties.conductance import required_connectivity
-
     children = _population()
-    sc = np.array([c.properties["superconductor"] for c in children])
-    cond = np.array([c.properties["conductivity"] for c in children])
     ec = np.array([c.properties["edge_connectivity"] for c in children])
-    frac_sc = (sc > 0.5).mean()
-    assert 0.0 < frac_sc < 0.10, f"superconductors not a thin rare tail: {frac_sc:.3f}"
-    # Double threshold: every superconductor is also a conductor.
-    assert ((sc > 0.5) <= (cond >= 0.5)).all(), "a superconductor that does not conduct"
-    # Superconductors are rarer than plain conductors (a tail *within* the conductors).
-    assert frac_sc < (cond >= 0.5).mean()
-    # The flag means exactly "edge-connectivity >= required k" — the topological criterion.
-    k = required_connectivity(SHAPE)
-    assert ((sc > 0.5) == (ec >= k)).all(), "superconductor flag != k-edge-connectivity"
+    cond = np.array([c.properties["conductivity"] for c in children])
+    assert (ec[cond < 0.5] == 0).all(), "an insulator has a conducting backbone"
+    assert ec[cond >= 0.5].max() >= 3, "no redundant (high-Tc-capable) backbones present"
+    assert (ec > 0).mean() > 0.1 and (ec == 0).mean() > 0.1  # a real spread, both modes present
 
 
 def test_curie_temperature_is_gated_by_order():

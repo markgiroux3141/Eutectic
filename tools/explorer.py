@@ -8,7 +8,8 @@ threshold experiment) since M0; ``combine`` since M1; ``distribution`` (populati
 since M2; ``magnetism-sweep`` (Ising transition) and ``connectivity-sweep`` (higher-order
 percolation transitions behind superconductivity) since M3; ``temperature-sweep`` (Curie
 point) and ``process-compare`` (synthesis trajectories) since M4; ``melting-sweep`` (the
-occupancy order-disorder / melting transition) since M5.
+occupancy order-disorder / melting transition) since M5; ``sc-sweep`` (phase-coherence /
+BKT superconducting Tc) since M6.
 
 Usage::
 
@@ -560,6 +561,88 @@ def _plot_melting_sweep(temps, psis, caps, rhos, tm, label, out_dir: Path) -> Pa
     return out_path
 
 
+def cmd_sc_sweep(args: argparse.Namespace) -> int:
+    """Sweep T for one material's phase coherence; show Y(T), the BKT line, and Tc (M6).
+
+    Honest superconductivity: a conducting backbone carries an XY phase field, and its helicity
+    modulus Y(T) (phase stiffness) is the order parameter. The transition Tc is where Y(T) crosses
+    the BKT universal line Y=(2/pi)T -- NOT the heat-capacity peak, which for a BKT transition
+    sits ABOVE Tc (we print both to show it). A fully-conducting lattice lands on the textbook
+    0.893; a diluted/tortuous backbone coheres lower, so Tc emerges from structure. One id for a
+    root, two to combine.
+    """
+    from engine import thermal
+
+    shape = tuple(args.shape) if args.shape else (64, 64)
+    reg = Registry(universe_seed=args.seed, shape=shape)
+    reg.add_element(args.a)
+    if args.b is not None:
+        reg.add_element(args.b)
+        mat = reg.combine(args.a, args.b)
+        label = f"combine({args.a}, {args.b})"
+    else:
+        mat = reg.get(args.a)
+        label = args.a
+    lat = mat.lattice
+
+    temps = np.linspace(args.lo, args.hi, args.steps)
+    sweep = thermal.xy_temperature_sweep(
+        lat, temps, burn_in=args.burn_in, n_samples=args.samples, sample_every=args.sample_every,
+    )
+    hel = np.array([s.helicity_modulus for s in sweep])
+    caps = np.array([s.heat_capacity for s in sweep])
+    line = (2.0 / np.pi) * temps
+    tc = thermal._universal_crossing(temps, hel.tolist())
+    c_peak_T = float(temps[int(np.argmax(caps))])
+
+    print(f"=== sc-sweep: {label} | seed={args.seed} shape={shape} ===")
+    print(f"conductivity(boolean)={mat.properties['conductivity']:.0f}  "
+          f"edge_connectivity={mat.properties['edge_connectivity']:.0f}  "
+          f"(textbook clean-lattice Tc = 0.893)")
+    print(f"{'T':>6}  {'Y(stiffness)':>12}  {'(2/pi)T':>8}  {'C':>7}")
+    for i, T in enumerate(temps):
+        mark = "  <-- Y crosses line (Tc)" if (tc is not None and abs(T - tc) < (temps[1]-temps[0])) else ""
+        cmark = "  [C peak]" if i == int(np.argmax(caps)) else ""
+        print(f"{T:6.3f}  {hel[i]:12.3f}  {line[i]:8.3f}  {caps[i]:7.3f}{mark}{cmark}")
+
+    if tc is None:
+        print("\nno superconducting Tc: the backbone never phase-coheres (not a superconductor).")
+    else:
+        print(f"\nTc = {tc:.3f}  (helicity modulus crosses the BKT universal line). "
+              f"C-peak at {c_peak_T:.3f} is ABOVE Tc -> the C-peak is NOT the SC detector (BKT).")
+
+    if args.plot:
+        out = _plot_sc_sweep(temps, hel, line, caps, tc, label, Path(args.out))
+        print(f"\nsaved sweep plot -> {out}")
+    return 0
+
+
+def _plot_sc_sweep(temps, hel, line, caps, tc, label, out_dir: Path) -> Path:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "sc_sweep.png"
+    fig, ax1 = plt.subplots(figsize=(7, 5))
+    ax1.plot(temps, hel, "o-", color="teal", label="Υ helicity modulus (phase stiffness)")
+    ax1.plot(temps, line, "k--", label="BKT universal line Υ = (2/π)·T")
+    ax1.set_xlabel("temperature T")
+    ax1.set_ylabel("helicity modulus Υ")
+    ax2 = ax1.twinx()
+    ax2.plot(temps, caps, "s:", color="crimson", alpha=0.6, label="C (peak is ABOVE Tc)")
+    ax2.set_ylabel("heat capacity C", color="crimson")
+    if tc is not None:
+        ax1.axvline(tc, color="seagreen", ls="-", alpha=0.7, label=f"Tc (BKT) = {tc:.3f}")
+    ax1.set_title(f"Superconducting phase coherence (XY/BKT) — {label}")
+    ax1.legend(loc="upper right", fontsize=8)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=120)
+    plt.close(fig)
+    return out_path
+
+
 def cmd_process_compare(args: argparse.Namespace) -> int:
     """Run several synthesis processes on one structure and compare the results (process layer).
 
@@ -804,22 +887,19 @@ def cmd_distribution(args: argparse.Namespace) -> int:
     else:
         print("curie point:  none in this sample (no ferromagnets drawn)")
 
-    # Superconductivity (spec §5.4): spanning AND k-edge-connected (loss-free backbone).
-    from engine.properties.conductance import required_connectivity
-
-    sc = np.asarray(series["superconductor"])
-    n_sc = int((sc > 0.5).sum())
-    # Every superconductor must also be a conductor (the double threshold).
-    sc_conducts = bool(((sc > 0.5) <= (cond >= 0.5)).all())
-    k = required_connectivity(shape)
+    # Backbone redundancy (M6): edge-connectivity is the *structural input* to the
+    # phase-coherence superconducting Tc (a redundant backbone is phase-stiff -> higher Tc). The
+    # SC transition itself is measured on demand -- see the `sc-sweep` view.
+    ec = np.asarray(series["edge_connectivity"])
+    redundant = ec[ec >= 3]
     print(
-        f"superconductors: {n_sc}/{len(children)} ({sc.mean()*100:.2f}%) "
-        f"-- thin tail: spans AND edge-connectivity >= {k} (p_k > p_c); "
-        f"all-also-conduct={sc_conducts}"
+        f"backbone:     {(ec > 0).mean()*100:.0f}% span (edge-connectivity>0), "
+        f"{(ec >= 3).mean()*100:.0f}% redundant (>=3, high-Tc-capable); "
+        f"max edge-connectivity {int(ec.max())}  -> SC Tc rides this (run `sc-sweep`)"
     )
 
     # 0/1 boolean series: a histogram of two spikes isn't illuminating.
-    boolean_keys = {"conductivity", "superconductor"}
+    boolean_keys = {"conductivity"}
     for k in props:
         print(f"\n{k}:")
         print("  " + _stats_line(series[k]))
@@ -977,6 +1057,26 @@ def build_parser() -> argparse.ArgumentParser:
     p_melt.add_argument("--plot", action="store_true", help="save ψ(T)/C(T)/ρ(T) plot")
     p_melt.add_argument("--out", default="out", help="output dir for plots")
     p_melt.set_defaults(func=cmd_melting_sweep)
+
+    p_sc = sub.add_parser(
+        "sc-sweep",
+        help="sweep T for one material's phase coherence; Y(T), BKT line, and superconducting Tc (M6)",
+    )
+    p_sc.add_argument("a", help="element/material id (or first of two to combine)")
+    p_sc.add_argument("b", nargs="?", default=None, help="optional second id to combine")
+    p_sc.add_argument("--lo", type=float, default=0.10, help="min temperature")
+    p_sc.add_argument("--hi", type=float, default=1.20, help="max temperature")
+    p_sc.add_argument("--steps", type=int, default=18, help="number of temperatures")
+    p_sc.add_argument("--burn-in", type=int, default=300, help="equilibration sweeps (XY is slow)")
+    p_sc.add_argument("--samples", type=int, default=120, help="samples per temperature")
+    p_sc.add_argument("--sample-every", type=int, default=2, help="sweeps between samples")
+    p_sc.add_argument(
+        "--shape", type=int, nargs="+", default=None, help="lattice shape (default 64 64)"
+    )
+    p_sc.add_argument("--seed", type=int, default=0, help="UNIVERSE_SEED (default 0)")
+    p_sc.add_argument("--plot", action="store_true", help="save Y(T)/BKT-line/Tc plot")
+    p_sc.add_argument("--out", default="out", help="output dir for plots")
+    p_sc.set_defaults(func=cmd_sc_sweep)
 
     p_proc = sub.add_parser(
         "process-compare",

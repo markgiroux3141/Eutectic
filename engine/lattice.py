@@ -58,6 +58,18 @@ COHESION_J0: float = 1.0
 # so an Ising-equivalent coupling J needs lattice-gas repulsion ε = 4J. Folding it in here
 # lets COHESION_J0 be stated directly in Ising (Curie-comparable) units.
 _LATTICE_GAS_FACTOR: float = 4.0
+
+# --- superconductivity / XY phase-coherence coupling (M6) ------------------------------
+# Global XY coupling for the phase-coherence (superconductivity) ensemble. A conducting cell
+# carries a phase θ; bonds couple as -J·cos(θ_i−θ_j) across the conducting backbone. In 2D
+# this orders via a Berezinskii–Kosterlitz–Thouless (BKT) transition at the textbook
+# T_BKT = 0.893·SC_J0 for a *fully conducting* lattice (the parameter-free keystone). SC_J0=1
+# is the natural unit in which the keystone recovers the universal 0.893; a material's actual
+# superconducting Tc emerges *lower* and is set by how rigid (redundant) its backbone is.
+SC_J0: float = 1.0
+# Default proposal half-window for the continuous-angle Metropolis update (radians). Sized so
+# acceptance stays healthy across the BKT temperature range on the prototype lattices.
+SC_PROPOSAL_WINDOW: float = 1.6
 # Per-cell magnetic moment is mapped linearly from an element's ``magnetic_tendency`` in
 # [0,1] into [MOMENT_LO, MOMENT_HI]. The critical moment (where J0*m^2/T crosses the 2D
 # Ising point J/T ~ 0.4407, i.e. m_c = sqrt(0.4407*T/J0) ~ 0.94 at the defaults) is tuned
@@ -439,6 +451,52 @@ def occupancy_sweep(
         flip = accept & color_mask
         n = np.where(flip, 1.0 - n, n)
     return n.astype(np.uint8)
+
+
+def xy_sweep(
+    theta: np.ndarray,
+    cond: np.ndarray,
+    colors: tuple[np.ndarray, np.ndarray],
+    *,
+    coupling: float,
+    temperature: float,
+    gen: np.random.Generator,
+    window: float = SC_PROPOSAL_WINDOW,
+) -> np.ndarray:
+    """One deterministic checkerboard Metropolis sweep of the continuous **XY phase** field (M6).
+
+    The third sibling of :func:`metropolis_sweep` (Ising spins) and :func:`occupancy_sweep`
+    (lattice gas): here each *conducting* cell carries a phase ``θ_i`` and bonds couple as
+    ``-J·cos(θ_i − θ_j)`` across the conducting backbone. This is the substrate whose ordering
+    *is* superconductivity — phase coherence of the order parameter.
+
+    A move proposes ``θ_i' = θ_i + δ``, ``δ`` uniform in ``[−window, window]``, and accepts by
+    Metropolis. Writing ``cos(θ_i−θ_j) = cosθ_i·cosθ_j + sinθ_i·sinθ_j``, the change for a flip
+    is ``dE_i = −[(cosθ_i' − cosθ_i)·C_i + (sinθ_i' − sinθ_i)·S_i]·coupling`` where
+    ``C_i = Σ_{j∈nbr} cosθ_j·cond_j`` and ``S_i = Σ_{j∈nbr} sinθ_j·cond_j`` — neighbour sums
+    taken over *conducting* cells only, so the phase field lives on the backbone and ignores
+    vacancies/insulating sites. Only conducting cells of the active colour update.
+
+    Checkerboard parity makes the vectorised update equal a fixed sequential sweep; all
+    proposal/acceptance randomness comes from ``gen`` (spec §6). Returns the updated phases.
+    """
+    cond_f = cond.astype(np.float64)
+    cos_t = np.cos(theta)
+    sin_t = np.sin(theta)
+    for color_mask in colors:
+        C = _neighbor_sum(cos_t * cond_f)
+        S = _neighbor_sum(sin_t * cond_f)
+        prop = theta + (gen.random(theta.shape) * 2.0 - 1.0) * window
+        cos_p = np.cos(prop)
+        sin_p = np.sin(prop)
+        delta_e = -coupling * ((cos_p - cos_t) * C + (sin_p - sin_t) * S)
+        r = gen.random(theta.shape)
+        accept = (delta_e <= 0) | (r < np.exp(np.minimum(-delta_e / temperature, 0.0)))
+        update = accept & color_mask & (cond > 0)
+        theta = np.where(update, prop, theta)
+        cos_t = np.where(update, cos_p, cos_t)
+        sin_t = np.where(update, sin_p, sin_t)
+    return theta
 
 
 def relax(

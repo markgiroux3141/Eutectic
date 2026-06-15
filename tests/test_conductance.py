@@ -1,9 +1,10 @@
-"""Unit tests for effective resistance + superconductivity (spec §5.3, §5.4).
+"""Unit tests for effective resistance + backbone redundancy (spec §5.3).
 
 Hand-built structures pin the mechanism: a solid slab is a low-resistance, wide-bottleneck
-conductor; a single filament spans but is a thin-bottleneck, high-resistance non-conductor;
-an insulator has no spanning cluster. The double threshold and its determinism are checked
-here; the population's rare *tail* is asserted in ``test_distributions.py``.
+conductor; a single filament spans but is a thin-bottleneck, high-resistance conductor; an
+insulator has no spanning cluster. (Superconductivity is no longer a static flag here — it is
+the M6 phase-coherence Tc measured in ``engine.thermal``; ``edge_connectivity`` is its
+structural *input*. See ``tests/test_superconductivity.py``.)
 """
 
 import numpy as np
@@ -24,7 +25,7 @@ def test_empty_lattice_has_no_conductance():
     assert C.effective_resistance(lat) >= C.RESISTANCE_INF
     assert C.conductivity(lat) == 0.0
     assert C.bottleneck_fraction(lat) == 0.0
-    assert not C.is_superconductor(lat)
+    assert C.edge_connectivity(lat) == 0
 
 
 def test_full_slab_is_low_resistance_wide_bottleneck():
@@ -46,8 +47,8 @@ def test_single_filament_spans_but_chokes():
     # ... but it is a thin filament: width-1 bottleneck and series resistance ~ length.
     assert C.bottleneck_fraction(lat) == 1.0 / 16
     assert C.effective_resistance(lat) > 10
-    # A single filament is emphatically NOT a superconductor (fails the double threshold).
-    assert not C.is_superconductor(lat)
+    # A single filament has min-cut 1 (no redundancy) -- the weakest SC coupling input.
+    assert C.edge_connectivity(lat) == 1
 
 
 def test_two_parallel_filaments_double_the_bottleneck():
@@ -61,42 +62,24 @@ def test_two_parallel_filaments_double_the_bottleneck():
     assert C.effective_resistance(lat) < C.effective_resistance(_lattice(one))
 
 
-def test_slab_is_superconductor_k_connected():
-    """A solid slab is highly edge-connected (min-cut = full width) -> superconductor."""
+def test_slab_has_full_width_edge_connectivity():
+    """A solid slab is maximally redundant: min-cut = full cross-section (the SC coupling input)."""
     lat = _lattice(np.ones((24, 24)))
-    assert C.is_superconductor(lat)
     m = C.measure(lat)
-    assert m["superconductor"] == 1.0
-    # Edge-connectivity is the full cross-section, far above the required k.
-    assert m["edge_connectivity"] == 24
-    assert m["edge_connectivity"] >= C.required_connectivity(lat.shape)
+    assert m["edge_connectivity"] == 24          # full cross-section
+    assert m["bottleneck_fraction"] == 1.0
+    assert "superconductor" not in m             # the static SC flag is retired
 
 
-def test_required_connectivity_scales_with_width_and_floors_at_two():
-    """k scales with lattice width but never drops below 2 ('no single bottleneck edge')."""
-    assert C.required_connectivity((64, 64)) == round(0.17 * 64)
-    assert C.required_connectivity((40, 40)) == round(0.17 * 40)
-    assert C.required_connectivity((4, 4)) == 2  # floor
-
-
-def test_filament_is_not_superconductor_but_is_a_conductor():
-    """A single filament spans (conductor) yet is min-cut 1 -> fails k-connectivity."""
-    occ = np.zeros((16, 16)); occ[:, 8] = 1
-    lat = _lattice(occ)
-    assert C.conductivity(lat) > 0          # it conducts (spans)
-    assert C.edge_connectivity(lat) == 1     # ... through a single path
-    assert not C.is_superconductor(lat)      # so it is not loss-free
-
-
-def test_superconductor_implies_spanning():
-    """The double threshold: anything flagged superconducting must also conduct (span)."""
-    from engine.properties import percolation
-
-    # A solid slab (superconductor) and a checkerboard (no face connectivity) bracket it.
-    slab = _lattice(np.ones((20, 20)))
-    assert C.is_superconductor(slab) and percolation.conductivity_boolean(slab)
-    checker = _lattice((np.indices((20, 20)).sum(0) % 2 == 0).astype(np.uint8))
-    assert not C.is_superconductor(checker)
+def test_edge_connectivity_ranks_backbone_redundancy():
+    """Slab (full width) > two filaments (2) > one filament (1) > checkerboard (0, no spanning)."""
+    occ1 = np.zeros((16, 16)); occ1[:, 8] = 1
+    occ2 = np.zeros((16, 16)); occ2[:, 4] = 1; occ2[:, 12] = 1
+    checker = (np.indices((16, 16)).sum(0) % 2 == 0).astype(np.uint8)
+    assert C.edge_connectivity(_lattice(np.ones((16, 16)))) == 16
+    assert C.edge_connectivity(_lattice(occ2)) == 2
+    assert C.edge_connectivity(_lattice(occ1)) == 1
+    assert C.edge_connectivity(_lattice(checker)) == 0  # no face-connected spanning path
 
 
 def test_resistance_is_deterministic():
@@ -116,4 +99,3 @@ def test_measure_matches_individual_extractors():
     assert m["conductivity_continuous"] == C.conductivity(lat)
     assert m["bottleneck_fraction"] == C.bottleneck_fraction(lat)
     assert m["edge_connectivity"] == C.edge_connectivity(lat)
-    assert bool(m["superconductor"]) == C.is_superconductor(lat)

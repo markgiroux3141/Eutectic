@@ -1,26 +1,25 @@
-"""Effective resistance -> superconductivity (spec §5.3, §5.4).
+"""Effective resistance + backbone redundancy (spec §5.3; the conducting-graph measurements).
 
-Superconductivity is a **threshold on a threshold** (spec §1, §5.4) — but an *honest* one.
-Two measurements, both taken from the settled lattice's conducting structure:
+Two measurements taken from the settled lattice's conducting structure:
 
 * **effective resistance** (§5.3): treat the conducting cells as a unit-conductance
   resistor network and solve the graph Laplacian for the resistance between two opposite
   faces (ideal equipotential bus bars). ``conductivity = 1/resistance``. A chunky,
   redundant conductor has low resistance; a thin tortuous near-percolation path has high
-  resistance. This is *reported* as a property — but note it is **smooth-tailed** in a
-  site-percolation substrate (there is no second "loss-free phase"), so it does NOT gate
-  superconductivity (an earlier resistance-percentile cut was a disguised probability dial;
-  see README "M3 findings").
-* **edge-connectivity** (§5.4): the max-flow / min-cut between the two faces — the number
-  of edge-disjoint paths. A single filament has width 1; a solid slab has width ~ the
-  cross-section. ``k``-edge-connectivity appears at a *genuine* higher-order percolation
-  threshold ``p_k`` that rises with ``k`` and exceeds the ordinary point ``p_c`` (k=1
-  reproduces site ``p_c ~ 0.593``).
+  resistance.
+* **edge-connectivity**: the max-flow / min-cut between the two faces — the number of
+  edge-disjoint paths. A single filament has width 1; a solid slab has width ~ the
+  cross-section. ``k``-edge-connectivity appears at a higher-order percolation threshold
+  ``p_k`` that rises with ``k`` and exceeds the ordinary point ``p_c`` (k=1 reproduces site
+  ``p_c ~ 0.593``). This is the **backbone-redundancy** of the conductor.
 
-Superconductivity = the backbone **spans** (threshold ``p_c``, §5.2) AND is **k-edge-
-connected** (threshold ``p_k > p_c``) — a loss-free network with no thin choke point. Both
-conditions are real topological transitions, so requiring the second on top of the first
-yields a thin rare tail. Verify it empirically in the explorer (§7).
+**Superconductivity moved to M6** (`engine.thermal`): it is no longer a static topological
+flag here. Real superconductivity is *phase coherence* — modelled as an XY (BKT) ordering of
+the conducting backbone with an emergent transition temperature ``superconducting_tc``. The
+``edge_connectivity``/``bottleneck_fraction`` measured here are the **structural input** to
+that (a redundant backbone is phase-stiff → higher Tc), not the label. The earlier static
+``is_superconductor`` proxy (k-edge-connectivity at fixed conditions, no real Tc) is
+**retired** — see README "M6 findings" and `superconductivity-status`.
 
 Determinism (spec §6): nodes are ordered by flattened cell index (a fixed order), the
 Laplacian solve uses a direct sparse solver (``spsolve``, SuperLU — deterministic, unlike
@@ -39,42 +38,6 @@ from scipy.sparse.linalg import spsolve
 
 from ..lattice import Lattice
 from . import percolation
-
-# --- superconductivity criterion (spec §5.4) ------------------------------------------
-# Superconductivity = a spanning conducting backbone that is *loss-free*. We encode
-# loss-free TOPOLOGICALLY: the backbone must be k-edge-connected between opposite faces —
-# i.e. its min-cut (number of edge-disjoint spanning paths) is at least k, so there is no
-# thin choke point. This rides a *genuine* higher-order percolation transition:
-# k-edge-connectivity percolation has its own critical density p_k that increases with k
-# and is strictly above the ordinary percolation point p_c (verified by the fill-sweep;
-# k=1 reproduces site p_c ~ 0.593). So superconductivity is "a threshold (p_k) on a
-# threshold (p_c)", an integer topological criterion — NOT a smooth cut on a resistance
-# tail. Effective resistance is still *reported* (a real measured property), but it does
-# not gate superconductivity.
-#
-# Honest caveats (see README "M3 findings"): (1) requiring redundancy k well above p_c
-# makes superconductors rare, but the *amount* of rarity depends on which p_k we pick —
-# this fraction is the one remaining knob. Unlike a resistance percentile, each k is a
-# real transition, so the knob selects *which* transition, not a point on a smooth tail.
-# (2) Absolute k is not size-robust (bottleneck width scales with the cross-section), so we
-# scale k with the lattice width to keep the redundancy requirement geometric and the rate
-# ~size-stable (~2-3.5% across 40-64 lattices). The fraction below would need recalibration
-# for the 3D target (different connectivity geometry).
-SUPERCONDUCTOR_CONNECTIVITY_FRACTION: float = 0.17
-SUPERCONDUCTOR_MIN_CONNECTIVITY: int = 2  # floor: "no single bottleneck edge"
-
-
-def required_connectivity(shape: tuple[int, ...]) -> int:
-    """The min-cut k a backbone must reach to count as loss-free, scaled to lattice width.
-
-    ``k = max(2, round(fraction * cross-section width))`` — geometric, so the redundancy
-    requirement (and hence the superconductor rate) stays ~constant across lattice sizes.
-    """
-    width = min(shape)
-    return max(
-        SUPERCONDUCTOR_MIN_CONNECTIVITY,
-        int(round(SUPERCONDUCTOR_CONNECTIVITY_FRACTION * width)),
-    )
 
 # Numerical stand-in for "no spanning cluster" (infinite resistance). Kept finite so
 # measured properties quantize and compare cleanly (spec §6.4); conductivity reads 0 here.
@@ -313,23 +276,16 @@ def bottleneck_fraction(lattice: Lattice) -> float:
     return best
 
 
-def is_superconductor(lattice: Lattice) -> bool:
-    """Boolean superconductivity: a spanning, k-edge-connected (loss-free) backbone (§5.4).
-
-    True iff the conducting backbone spans AND its edge-connectivity reaches
-    :func:`required_connectivity` for this lattice's size — i.e. it sits above the
-    higher-order percolation threshold ``p_k``, with no thin choke point. A genuine
-    topological criterion, not a resistance-tail cut.
-    """
-    return edge_connectivity(lattice) >= required_connectivity(lattice.shape)
-
-
 def measure(lattice: Lattice) -> dict[str, float]:
-    """All conductance/superconductivity properties in a single per-axis solve.
+    """All conducting-graph properties in a single per-axis solve.
 
     The individual extractors above each re-run the (relatively expensive) Laplacian +
     max-flow solve; this computes ``_per_axis`` once and derives every value from it, so
     :func:`engine.material.measure_properties` pays the cost only once per material.
+
+    Returns conductivity, ``edge_connectivity`` and ``bottleneck_fraction`` (the backbone's
+    redundancy — the structural input to the M6 phase-coherence superconductivity, no longer a
+    superconductivity *flag* itself).
     """
     per_axis = _per_axis(lattice)
     best_cond = 0.0
@@ -342,10 +298,8 @@ def measure(lattice: Lattice) -> dict[str, float]:
         best_width = max(best_width, w)
         if r < RESISTANCE_INF:
             best_cond = max(best_cond, 1.0 / r)
-    k_required = required_connectivity(lattice.shape)
     return {
         "conductivity_continuous": best_cond,
         "edge_connectivity": float(best_width),
         "bottleneck_fraction": best_frac,
-        "superconductor": float(best_width >= k_required),
     }

@@ -39,11 +39,14 @@ from .lattice import (
     COHESION_J0,
     EXCHANGE_J0,
     Lattice,
+    SC_J0,
+    SC_PROPOSAL_WINDOW,
     _LATTICE_GAS_FACTOR,
     _neighbor_sum,
     checkerboard_colors,
     metropolis_sweep,
     occupancy_sweep,
+    xy_sweep,
 )
 from .rng import SplitMix64, hash_array, mix
 
@@ -62,6 +65,14 @@ _ENSEMBLE_SALT: int = 0x54  # 'T'
 # A distinct salt for the occupancy (melting) ensemble so its stream never collides with the
 # spin ensemble's.
 _OCC_SALT: int = 0x4F       # 'O'
+# And one for the XY phase-coherence (superconductivity) ensemble (M6).
+_PHASE_SALT: int = 0x50     # 'P'
+
+# The 2D-XY universal jump: at the BKT transition the helicity modulus satisfies
+# Υ(T_BKT) = (2/π)·T_BKT. T_BKT is located as the crossing of Υ(T) with this line — NOT the
+# heat-capacity peak, which for the XY model sits *above* T_BKT (the C-peak detector that
+# locates the Curie/melting points does not apply to a BKT transition; see docs / M6 findings).
+_BKT_UNIVERSAL_SLOPE: float = 2.0 / np.pi
 
 # Pressure → chemical-potential gain (M5). ``Conditions.pressure`` shifts μ above its
 # particle-hole-symmetric (half-filling) value, in the occupancy energy's own units:
@@ -439,3 +450,181 @@ def melting_point(
         peak = max(range(len(sweep)), key=lambda i: sweep[i].heat_capacity)
         tm = float(temps[peak])
     return (tm, sweep) if return_curve else tm
+
+
+# === M6: the XY phase-coherence ensemble — honest superconductivity with a real Tc =====
+# Superconductivity *is* phase coherence of the order parameter. We put an XY model (a phase
+# θ per conducting cell, -J·cos(θ_i−θ_j) across the conducting backbone) on the structure and
+# measure the **helicity modulus** Υ(T) — the superconducting (phase) stiffness. In 2D this
+# orders via a BKT transition, so (unlike Curie/melting) there is no true long-range order and
+# the heat-capacity peak does NOT mark Tc; the transition is where Υ(T) crosses the universal
+# line Υ = (2/π)·T. Tc emerges from the backbone's rigidity — a redundant solid backbone
+# coheres up to the textbook 0.893·J0, a thin near-percolation filament barely coheres — so the
+# k-edge-connectivity work becomes the *coupling input*, not the label (it retires the static
+# proxy). Determinism: seeded from structure signature + quantized conditions (the conducting
+# mask is `occupied`, already in the signature).
+
+
+@dataclass(frozen=True)
+class XYStats:
+    """Observables of the XY phase-coherence (superconductivity) ensemble at fixed conditions."""
+
+    conditions: Conditions
+    helicity_modulus: float   # Υ, the superconducting phase stiffness (the order parameter)
+    mean_energy: float        # ⟨E⟩ of the XY Hamiltonian on the conducting backbone
+    energy_var: float         # Var(E)
+    heat_capacity: float      # C = Var(E)/(N·T²) — peaks ABOVE Tc for BKT (do not use as Tc)
+    n_conducting: int         # number of conducting cells, the normalisation N
+
+
+def _phase_seed(lattice: Lattice, conditions: Conditions, salt: int) -> int:
+    t, p, h = conditions.seed_key()
+    return mix(lattice.structural_signature(), t, p, h, salt, _PHASE_SALT)
+
+
+def sample_xy_ensemble(
+    lattice: Lattice,
+    conditions: Conditions = STANDARD,
+    *,
+    seed: int | None = None,
+    coupling: float = SC_J0,
+    window: float = SC_PROPOSAL_WINDOW,
+    burn_in: int = 200,
+    n_samples: int = 80,
+    sample_every: int = 2,
+) -> XYStats:
+    """Measure the equilibrium phase stiffness (helicity modulus) of ``lattice``'s backbone.
+
+    Runs the XY ensemble on the conducting cells at ``conditions.temperature`` from an aligned
+    (θ≡0) start, then samples the helicity modulus, averaged over the two lattice directions:
+
+        Υ_d = (1/N)·⟨Σ_d cos(Δθ_d)·b_d⟩ − (1/(N·T))·Var(Σ_d sin(Δθ_d)·b_d)
+
+    where ``b_d`` is 1 on a bond whose *both* endpoints conduct, ``Δθ_d`` the phase difference
+    along direction ``d``, and ``N`` the number of conducting cells. The fluctuation term is the
+    phase-winding stiffness; a rigid (coherent) backbone keeps Υ high, a floppy one drives it to
+    0. Deterministic in ``(structure, conditions)`` (spec §6).
+    """
+    T = conditions.temperature
+    cond = (lattice.occupied == 1)
+    cond_f = cond.astype(np.float64)
+    n_cond = int(cond.sum())
+    shape = lattice.shape
+    if seed is None:
+        seed = _phase_seed(lattice, conditions, salt=0)
+    gen = SplitMix64(seed).numpy_generator()
+    colors = checkerboard_colors(shape)
+
+    if n_cond == 0:
+        return XYStats(conditions, 0.0, 0.0, 0.0, 0.0, 0)
+
+    # active-bond masks per direction (both endpoints conduct; non-wrapping handled by the
+    # bond living "between i and i+1", periodic like the kernel's neighbour sum)
+    bond = [cond_f * np.roll(cond_f, -1, axis=ax) for ax in range(lattice.dim)]
+
+    theta = np.zeros(shape, dtype=np.float64)  # aligned start (coherent), symmetry broken
+    for _ in range(burn_in):
+        theta = xy_sweep(theta, cond, colors, coupling=coupling,
+                         temperature=T, gen=gen, window=window)
+
+    energies = np.empty(n_samples)
+    cos_sums = np.empty(n_samples)             # Σ_d cos(Δθ) over active bonds, both dirs
+    wind = [np.empty(n_samples) for _ in range(lattice.dim)]  # Σ sin(Δθ) per direction
+    for k in range(n_samples):
+        for _ in range(sample_every):
+            theta = xy_sweep(theta, cond, colors, coupling=coupling,
+                             temperature=T, gen=gen, window=window)
+        cos_total = 0.0
+        for ax in range(lattice.dim):
+            d = theta - np.roll(theta, -1, axis=ax)
+            cos_total += float((np.cos(d) * bond[ax]).sum())
+            wind[ax][k] = float((np.sin(d) * bond[ax]).sum())
+        cos_sums[k] = cos_total
+        energies[k] = -coupling * cos_total
+
+    # helicity modulus averaged over directions
+    hel = 0.0
+    for ax in range(lattice.dim):
+        cos_term = coupling * (cos_sums.mean() / lattice.dim) / n_cond
+        var_term = coupling * coupling * wind[ax].var() / (n_cond * T)
+        hel += cos_term - var_term
+    hel /= lattice.dim
+
+    e_var = float(energies.var())
+    return XYStats(
+        conditions=conditions,
+        helicity_modulus=float(hel),
+        mean_energy=float(energies.mean()),
+        energy_var=e_var,
+        heat_capacity=e_var / (n_cond * T * T),
+        n_conducting=n_cond,
+    )
+
+
+def xy_temperature_sweep(
+    lattice: Lattice,
+    temperatures,
+    *,
+    coupling: float = SC_J0,
+    window: float = SC_PROPOSAL_WINDOW,
+    burn_in: int = 200,
+    n_samples: int = 80,
+    sample_every: int = 2,
+) -> list[XYStats]:
+    """Measure the XY ensemble at each temperature. One :class:`XYStats` per point."""
+    out: list[XYStats] = []
+    for T in temperatures:
+        cond = Conditions(temperature=float(T))
+        out.append(sample_xy_ensemble(
+            lattice, cond, coupling=coupling, window=window,
+            burn_in=burn_in, n_samples=n_samples, sample_every=sample_every,
+        ))
+    return out
+
+
+def _universal_crossing(temps, helicities) -> float | None:
+    """Temperature where Υ(T) crosses the BKT universal line Υ = (2/π)·T (first down-crossing).
+
+    Returns ``None`` if Υ is already below the line at the lowest temperature (no coherent
+    phase even at low T → no superconductivity). Linear interpolation between bracketing points.
+    """
+    f = [h - _BKT_UNIVERSAL_SLOPE * T for h, T in zip(helicities, temps)]
+    if f[0] < 0:
+        return None  # never coherent in this range
+    for i in range(len(f) - 1):
+        if f[i] >= 0 >= f[i + 1]:
+            t = f[i] / (f[i] - f[i + 1])
+            return float(temps[i] + t * (temps[i + 1] - temps[i]))
+    return None  # still coherent at the top of the range (Tc above it)
+
+
+def superconducting_tc(
+    lattice: Lattice,
+    *,
+    coupling: float = SC_J0,
+    t_lo: float = 0.10,
+    t_hi: float = 1.10,
+    n_temps: int = 16,
+    window: float = SC_PROPOSAL_WINDOW,
+    burn_in: int = 200,
+    n_samples: int = 80,
+    sample_every: int = 2,
+    return_curve: bool = False,
+):
+    """Superconducting transition temperature ``Tc`` = the BKT helicity-modulus crossing (M6).
+
+    Sweeps temperature and returns where the phase stiffness Υ(T) crosses the universal line
+    ``Υ = (2/π)·T`` — the BKT transition, the temperature below which the backbone is
+    phase-coherent (superconducting). NOT the heat-capacity peak (which sits above Tc for BKT).
+    Returns ``None`` when the backbone never coheres over the range (no superconductivity). For a
+    fully-conducting lattice this lands on the textbook ``0.893·coupling`` (parameter-free); a
+    diluted/tortuous backbone gives a *lower* Tc, so Tc emerges from structure. With
+    ``return_curve=True`` returns ``(Tc, sweep)``.
+    """
+    temps = np.linspace(t_lo, t_hi, n_temps)
+    sweep = xy_temperature_sweep(
+        lattice, temps, coupling=coupling, window=window,
+        burn_in=burn_in, n_samples=n_samples, sample_every=sample_every,
+    )
+    tc = _universal_crossing(temps, [s.helicity_modulus for s in sweep])
+    return (tc, sweep) if return_curve else tc
