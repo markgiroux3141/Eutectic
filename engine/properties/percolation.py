@@ -21,12 +21,31 @@ from scipy import ndimage
 from ..lattice import Lattice
 
 
-def conducting_mask(lattice: Lattice) -> np.ndarray:
-    """Boolean mask of cells that carry current.
+# M6b: a cell carries *charge* iff it is occupied AND metallic (``metallicity`` above this
+# threshold). Below it the atom is an insulator for charge — it still carries heat (phonons),
+# which is what splits the two carriers and produces the diamond divergence. The default
+# metallicity is 1.0, so synthetic/constructed lattices keep the M2 behaviour (charge = occupied).
+METALLIC_THRESHOLD: float = 0.60
 
-    M2 baseline: a cell conducts iff it is occupied. (Later milestones may gate this on
-    ``atom_type`` so only some kinds of sites conduct — kept as a single chokepoint here
-    so percolation, conductance, and superconductivity all agree on "what conducts".)
+
+def conducting_mask(lattice: Lattice) -> np.ndarray:
+    """Boolean mask of cells that carry **charge** (the electrical / superconducting backbone).
+
+    A cell conducts charge iff it is occupied *and* metallic (``metallicity`` ≥
+    :data:`METALLIC_THRESHOLD`, M6b). The single chokepoint so percolation, conductance and
+    superconductivity all agree on "what conducts charge". Heat (phonons) uses
+    :func:`solid_mask` instead — all occupied matter — so an electrical insulator can still be a
+    fine heat conductor (the diamond divergence).
+    """
+    return (lattice.occupied == 1) & (np.asarray(lattice.metallicity) >= METALLIC_THRESHOLD)
+
+
+def solid_mask(lattice: Lattice) -> np.ndarray:
+    """Boolean mask of cells that are **matter** (occupied), regardless of metallicity.
+
+    The *structural* / solid network: heat (phonons) flows through it, the largest cluster is
+    the solidity that gates melting, and it is the matter-percolation order parameter. This is
+    the M2 ``occupied`` mask, kept distinct from the (metallicity-gated) charge backbone.
     """
     return lattice.occupied == 1
 
@@ -80,10 +99,11 @@ def spanning_fraction(lattice: Lattice, axis: int = 0) -> float:
     """Fraction of all cells belonging to the spanning cluster along ``axis``.
 
     A continuous companion to the boolean: 0 below threshold, rising sharply above it as
-    the spanning cluster engulfs most of the conducting mass. Useful for histograms that
-    show the transition's shape (spec §7).
+    the spanning cluster engulfs most of the solid mass. Useful for histograms that
+    show the transition's shape (spec §7). Measured on the **solid** (matter) network so it is
+    the structural percolation order parameter — independent of metallicity (M6b).
     """
-    labels, n = label_clusters(conducting_mask(lattice))
+    labels, n = label_clusters(solid_mask(lattice))
     if n == 0:
         return 0.0
     lo = np.take(labels, 0, axis=axis)
@@ -101,9 +121,11 @@ def largest_cluster_fraction(lattice: Lattice) -> float:
     """Fraction of cells in the single largest conducting cluster (the order parameter).
 
     This is the classic percolation order parameter: near-zero in the disconnected
-    (insulating) phase, jumping toward the fill fraction once a giant cluster forms.
+    (sparse) phase, jumping toward the fill fraction once a giant cluster forms. Measured on
+    the **solid** (matter) network (M6b), so it is the material's solidity — what gates melting
+    — independent of whether that matter is metallic.
     """
-    labels, n = label_clusters(conducting_mask(lattice))
+    labels, n = label_clusters(solid_mask(lattice))
     if n == 0:
         return 0.0
     counts = np.bincount(labels.reshape(-1))

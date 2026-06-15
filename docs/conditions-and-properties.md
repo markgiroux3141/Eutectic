@@ -79,9 +79,13 @@ engine.
 - electrical conductivity / effective resistance (graph Laplacian)
 
 **Tier 1 — cheap, reuse existing machinery**
-- **thermal conductivity** — the *same* graph as electrical conductivity ("heat flows"
-  instead of "charge"); `atom_type`-gated heat vs charge carriers gives Wiedemann–Franz-like
-  relations for free.
+- **thermal conductivity — ✅ DONE (M6b).** Two carriers: *electronic* (Wiedemann–Franz
+  `κ_e = L·T·σ`) and *phononic* (weighted Laplacian over all occupied matter, bond conductance
+  ∝ stiffness/mass from `cohesion`/`mass`). Charge is gated by a per-cell **metallicity** field
+  (from `conduction_tendency`) — split in `percolation` as a charge mask (metallic) vs a solid
+  mask (matter) — so heat flows through insulators too: the **diamond divergence** (carbon σ=0
+  but top thermal conductivity) falls out. Melting/solid measures stay byte-identical; M2/M3
+  re-validated.
 - **heat capacity** — energy fluctuations `Var(E)/T²` of the thermal ensemble. Free once
   anything is thermal, **and it peaks at every transition** → a *universal transition
   detector* (we don't hand-define Curie/melting/SC points; the peaks *are* them).
@@ -206,10 +210,12 @@ demo'd in the explorer before moving on.
     filling (intrinsic to bonding, not the standard-conditions fill); stored value is coarse
     (lean sweep); the cooling-rate → grain-size process signal is weak (reported), so the process
     payoff is structural **density** under a pressure schedule. See README **M5 findings**.
-- **M6 — Transport + honest superconductivity.** **M6a ✅ DONE:** superconductivity via
+- **M6 — Transport + honest superconductivity. ✅ DONE.** **M6a:** superconductivity via
   phase-coherence (XY/BKT) → real measured Tc (helicity-modulus universal-line crossing); static
-  proxy retired; on-demand (slow XY equilibration). **M6b (next):** thermal conductivity (reuse
-  the Laplacian; `atom_type`-gated phonon/electronic carriers → Wiedemann–Franz-like).
+  proxy retired; on-demand (slow XY equilibration). **M6b:** thermal conductivity = electronic
+  (Wiedemann–Franz) + phononic (stiffness/mass-weighted Laplacian); charge gated by a per-cell
+  metallicity field (charge mask vs solid mask split in `percolation`) → the diamond divergence
+  (heat without charge). M2/M3 re-validated under the gating.
 - **M7 — Spectral.** Band gap → conductor/semiconductor/insulator (`eigh`).
 - **M8 — Mechanical.** Strength / ductility / fracture; confirm the strength↔ductility
   anti-correlation emerges.

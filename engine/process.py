@@ -175,6 +175,7 @@ def run_process(
         return Lattice(
             occupied=occ, atom_type=lattice.atom_type, spin=spin,
             mass=lattice.mass, moment=lattice.moment, cohesion=lattice.cohesion,
+            metallicity=lattice.metallicity,
         )
 
     spin = np.where(occ_mask, spin, 1).astype(np.int8)
@@ -185,6 +186,7 @@ def run_process(
         mass=lattice.mass,
         moment=lattice.moment,
         cohesion=lattice.cohesion,
+        metallicity=lattice.metallicity,
     )
 
 

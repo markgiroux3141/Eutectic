@@ -276,6 +276,110 @@ def bottleneck_fraction(lattice: Lattice) -> float:
     return best
 
 
+# --- thermal conductivity (M6b): electronic (Wiedemann-Franz) + phononic --------------
+# Heat has two carriers. ELECTRONIC: the same electrons that carry charge carry heat, so the
+# electronic thermal conductivity tracks the electrical one — Wiedemann-Franz, κ_e = L·T·σ
+# (this proportionality IS the single-carrier WF content, not a free fit). PHONONIC: lattice
+# vibrations carry heat through *all* occupied matter (the solid network, not the metallic
+# backbone), with a bond conductance set by stiffness/mass — a stiff, light lattice (carbon)
+# conducts phonons well. Their sum gives the diamond divergence: a non-metallic but stiff solid
+# (σ≈0) is still a superb heat conductor.
+WF_LORENZ: float = 1.0       # Wiedemann-Franz Lorenz number in engine units (κ_e = L·T·σ)
+STANDARD_T: float = 1.0      # reference temperature for the stored thermal conductivity
+
+
+def _phonon_weight(lattice: Lattice) -> np.ndarray:
+    """Per-cell phonon transport weight on the solid network: stiffness / mass^¼ (0 if empty).
+
+    Bond phonon conductance is ``w_i·w_j = cohesion_i·cohesion_j / sqrt(mass_i·mass_j)`` — rising
+    with bond stiffness (``cohesion``) and falling with atomic mass (heavy atoms carry phonons
+    poorly), the structural origin of why light, stiff lattices (carbon/diamond) conduct heat best.
+    """
+    occ = lattice.occupied == 1
+    coh = np.asarray(lattice.cohesion, dtype=np.float64)
+    mass = np.maximum(np.asarray(lattice.mass, dtype=np.float64), 1e-9)
+    return np.where(occ, coh / mass ** 0.25, 0.0)
+
+
+def _weighted_conductance_axis(mask: np.ndarray, weight: np.ndarray, axis: int) -> float:
+    """Face-to-face effective conductance of ``mask`` with per-cell ``weight`` (bond = w_i·w_j).
+
+    Same merged-electrode Laplacian as :func:`_effective_resistance_axis` but with weighted bonds
+    and returning conductance (``1/R_eff``); 0.0 if no cluster spans ``axis``. Deterministic.
+    """
+    labels, n = percolation.label_clusters(mask)
+    if n == 0:
+        return 0.0
+    lo = np.take(labels, 0, axis=axis)
+    hi = np.take(labels, -1, axis=axis)
+    span = set(np.unique(lo[lo > 0]).tolist()) & set(np.unique(hi[hi > 0]).tolist())
+    if not span:
+        return 0.0
+    keep = np.isin(labels, list(span))
+    node_id_grid, edges, low_nodes, high_nodes = _backbone_graph(keep, axis)
+    n_cells = int(keep.sum())
+    w = weight.reshape(-1)[np.flatnonzero(keep.reshape(-1))]
+
+    elec_a, elec_b = 0, 1
+    low_set, high_set = set(low_nodes), set(high_nodes)
+    rows, nxt = [], 2
+    for node in range(n_cells):
+        if node in low_set:
+            rows.append(elec_a)
+        elif node in high_set:
+            rows.append(elec_b)
+        else:
+            rows.append(nxt); nxt += 1
+    row = np.asarray(rows, dtype=np.int64)
+    n_rows = nxt
+
+    ii, jj, vv = [], [], []
+    for i, j in edges:
+        ri, rj = int(row[i]), int(row[j])
+        if ri == rj:
+            continue
+        g = float(w[i] * w[j])
+        ii += [ri, rj]; jj += [rj, ri]; vv += [-g, -g]
+    if not ii:
+        return 0.0
+    off = sparse.coo_matrix((vv, (ii, jj)), shape=(n_rows, n_rows)).tocsr()
+    deg = np.asarray(-off.sum(axis=1)).ravel()
+    lap = (off + sparse.diags(deg)).tocsc()
+    keep_rows = [r for r in range(n_rows) if r != elec_b]
+    lap_red = lap[keep_rows][:, keep_rows]
+    b = np.zeros(len(keep_rows))
+    a_pos = keep_rows.index(elec_a)
+    b[a_pos] = 1.0
+    try:
+        v = spsolve(lap_red, b)
+    except Exception:
+        return 0.0
+    r_eff = float(v[a_pos])
+    return 1.0 / r_eff if np.isfinite(r_eff) and r_eff > 0 else 0.0
+
+
+def phonon_conductivity(lattice: Lattice) -> float:
+    """Best-axis phononic thermal conductance over the **solid** (occupied) network (M6b).
+
+    Independent of metallicity — heat flows through all matter — so a non-metallic solid still
+    conducts. Rises with stiffness and falls with mass (see :func:`_phonon_weight`).
+    """
+    weight = _phonon_weight(lattice)
+    solid = percolation.solid_mask(lattice)
+    return max((_weighted_conductance_axis(solid, weight, ax) for ax in range(lattice.dim)),
+               default=0.0)
+
+
+def thermal_conductivity(lattice: Lattice, temperature: float = STANDARD_T) -> float:
+    """Total thermal conductivity: electronic (Wiedemann-Franz) + phononic (M6b).
+
+    ``κ = L·T·σ + κ_phonon`` where ``σ`` is the (metallicity-gated) electrical conductivity. A
+    metal carries heat both ways; a stiff non-metal (carbon) carries it by phonons alone — the
+    diamond divergence. Measured from structure, never assigned.
+    """
+    return WF_LORENZ * temperature * conductivity(lattice) + phonon_conductivity(lattice)
+
+
 def measure(lattice: Lattice) -> dict[str, float]:
     """All conducting-graph properties in a single per-axis solve.
 
@@ -283,9 +387,10 @@ def measure(lattice: Lattice) -> dict[str, float]:
     max-flow solve; this computes ``_per_axis`` once and derives every value from it, so
     :func:`engine.material.measure_properties` pays the cost only once per material.
 
-    Returns conductivity, ``edge_connectivity`` and ``bottleneck_fraction`` (the backbone's
-    redundancy — the structural input to the M6 phase-coherence superconductivity, no longer a
-    superconductivity *flag* itself).
+    Returns electrical conductivity, ``edge_connectivity`` and ``bottleneck_fraction`` (the
+    backbone's redundancy — the structural input to the M6 phase-coherence superconductivity), and
+    the M6b ``thermal_conductivity`` (electronic Wiedemann-Franz + phononic) with its phononic
+    component, so the electrical↔thermal divergence is legible.
     """
     per_axis = _per_axis(lattice)
     best_cond = 0.0
@@ -298,8 +403,11 @@ def measure(lattice: Lattice) -> dict[str, float]:
         best_width = max(best_width, w)
         if r < RESISTANCE_INF:
             best_cond = max(best_cond, 1.0 / r)
+    kappa_phonon = phonon_conductivity(lattice)
     return {
         "conductivity_continuous": best_cond,
         "edge_connectivity": float(best_width),
         "bottleneck_fraction": best_frac,
+        "thermal_conductivity": WF_LORENZ * STANDARD_T * best_cond + kappa_phonon,
+        "thermal_conductivity_phonon": kappa_phonon,
     }

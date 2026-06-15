@@ -23,7 +23,8 @@ engine/        deterministic, headless materials engine (never imports game/UI c
                  XY phase coherence + superconducting Tc (M6)
   process.py     synthesis as a trajectory: anneal/quench/field-cool; optional occupancy evolution (M5)
   properties/    pure Lattice -> float extractors (M2+); microstructure.py = process readouts
-                 (domain/positional order); cohesion field on the lattice drives melting (M5)
+                 (domain/positional order); cohesion drives melting (M5); conductance.py adds
+                 thermal conductivity, percolation.py splits charge (metallic) vs solid masks (M6b)
 machines/      worked-example performance equations (M5+); consume Material.properties only
 tools/         explorer.py — distributions, single-material inspection, lattice render
 tests/         determinism + distribution tests (run in CI from M1)
@@ -183,6 +184,21 @@ on the BKT keystone first, then pressure-tested.
   no real Tc) is gone from the measured properties; `conductance.py` keeps the genuinely-structural
   effective resistance + edge-connectivity (relabelled as backbone redundancy). Supersedes
   `superconductivity-status`.
+- **Thermal conductivity + the diamond divergence (M6b).** Heat has two carriers: *electronic*
+  (the charge-carrying electrons also carry heat → Wiedemann–Franz `κ_e = L·T·σ`, which is the
+  single-carrier WF content, not a fitted relation) and *phononic* (lattice vibrations through all
+  occupied matter, bond conductance ∝ `cohesion²/√mass` — stiff, light lattices win). Charge is
+  gated by a per-cell **metallicity** field (from `conduction_tendency`); heat is not. So the
+  **diamond divergence falls out**: carbon (non-metallic, stiff, light) has electrical σ=0 yet the
+  highest thermal conductivity in the element set — a heat conductor that carries no charge.
+  Implementation honesty: this required splitting `percolation`'s **charge mask** (occupied ∧
+  metallic — used by electrical conductivity, resistance, edge-connectivity, SC) from the **solid
+  mask** (occupied matter — used by `spanning_fraction`/`largest_cluster_fraction`, melting
+  solidity, and phonons). The solid measures stay byte-identical (melting untouched); only the
+  electrical family is now metallicity-gated, and M2/M3 were re-validated (conductivity stays
+  bimodal, magnetism transition intact, determinism green — 126 tests). `metallicity` is kept out
+  of `structural_signature` (derived from `conduction_tendency`), so combination seeds are
+  unchanged.
 
 ### M5 findings (crystalline melting falls out, and its honest scope)
 
@@ -254,8 +270,18 @@ M5 made `occupied` thermal and asked melting to *emerge* — pressure-tested the
       from backbone structure (redundant → high Tc, thin filament → ~0). The static
       `superconductor` proxy is **retired**; SC is measured on demand (explorer `sc-sweep`) — see
       **M6 findings**. `python -m tools.explorer sc-sweep iron copper --plot`.
-- [ ] M6b — Thermal conductivity (reuse the Laplacian; `atom_type`-gated phonon/electronic
-      carriers → Wiedemann–Franz-like). · M7 — Spectral (band gap). · M8 — Mechanical.
+- [x] **M6b — Thermal conductivity + the diamond divergence.** Two heat carriers on the
+      structure: **electronic** (Wiedemann–Franz, `κ_e = L·T·σ`) and **phononic** (a weighted
+      Laplacian over *all* occupied matter, bond conductance ∝ stiffness/mass from `cohesion`/
+      `mass`). Charge is now gated by a per-cell **metallicity** field (from `conduction_tendency`):
+      only metallic cells carry charge, so the electrical/SC backbone is the *metallic* subset
+      while heat flows through all matter. **The diamond divergence falls out:** carbon (non-metallic
+      but stiff, light) has electrical σ=0 yet the highest thermal conductivity. `conductance.py`
+      gains `thermal_conductivity`; `percolation.py` splits the charge mask (metallic) from the
+      solid mask (matter, byte-identical for melting). See **M6 findings**;
+      `python -m tools.explorer transport --plot`.
+- [ ] M7 — Spectral (band gap → conductor/semiconductor/insulator). · M8 — Mechanical
+      (strength/ductility).
 - [ ] Machine layer (motor) + game shell follow (spec §8, §11).
 
 ## Running
@@ -292,10 +318,14 @@ python -m tools.explorer melting-sweep tungsten --pressure 0.0
 # See the higher-order percolation transitions (backbone redundancy, the SC coupling input)
 python -m tools.explorer connectivity-sweep --plot
 
-# M6: honest superconductivity. Sweep T for a material's phase coherence -> helicity modulus
+# M6a: honest superconductivity. Sweep T for a material's phase coherence -> helicity modulus
 # Y(T); Tc is where Y crosses the BKT universal line (2/pi)T (NOT the C-peak, which is above
 # it). A redundant backbone coheres hotter; a thin one barely coheres. Two ids combine first.
 python -m tools.explorer sc-sweep iron copper --plot
+
+# M6b: electrical vs thermal conductivity across elements -> the diamond divergence (carbon
+# conducts heat superbly but carries no charge; metals carry both via Wiedemann-Franz).
+python -m tools.explorer transport --plot
 
 # Population view: distributions over many random combinations (spec §7 checkpoint)
 python -m tools.explorer distribution --n 500 --plot

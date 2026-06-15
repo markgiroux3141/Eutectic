@@ -9,7 +9,8 @@ since M2; ``magnetism-sweep`` (Ising transition) and ``connectivity-sweep`` (hig
 percolation transitions behind superconductivity) since M3; ``temperature-sweep`` (Curie
 point) and ``process-compare`` (synthesis trajectories) since M4; ``melting-sweep`` (the
 occupancy order-disorder / melting transition) since M5; ``sc-sweep`` (phase-coherence /
-BKT superconducting Tc) since M6.
+BKT superconducting Tc) and ``transport`` (electrical vs thermal conductivity — the diamond
+divergence) since M6.
 
 Usage::
 
@@ -757,6 +758,68 @@ def _print_properties(props: dict) -> None:
         print(f"  {key:24s} {props[key]}")
 
 
+def cmd_transport(args: argparse.Namespace) -> int:
+    """Compare electrical vs thermal conductivity across elements; show the diamond divergence (M6b).
+
+    Heat has two carriers: electrons (Wiedemann-Franz, tracks electrical conductivity) and
+    phonons (all occupied matter, weighted by stiffness/mass). A stiff non-metal (carbon) carries
+    no charge yet conducts heat superbly — the *diamond divergence*, flagged below.
+    """
+    shape = tuple(args.shape) if args.shape else (48, 48)
+    reg = Registry(universe_seed=args.seed, shape=shape)
+    ids = args.elements if args.elements else elements.all_ids()
+    for eid in ids:
+        reg.add_element(eid)
+
+    rows = []
+    for eid in ids:
+        p = reg.get(eid).properties
+        ct = elements.get(eid).base_affinities["conduction_tendency"]
+        rows.append((eid, ct, p["conductivity_continuous"], p["thermal_conductivity"],
+                     p["thermal_conductivity_phonon"]))
+    print(f"=== transport: electrical vs thermal | seed={args.seed} shape={shape} ===")
+    print(f"(metallic threshold conduction_tendency >= {percolation.METALLIC_THRESHOLD})")
+    print(f"{'elem':11s} {'cond_t':>6} {'sigma(elec)':>11} {'kappa(therm)':>12} "
+          f"{'kappa_phonon':>12}  note")
+    for eid, ct, sigma, kappa, kphon in sorted(rows, key=lambda r: -r[3]):
+        note = ""
+        if sigma == 0.0 and kappa > 0.02:
+            note = "<-- DIAMOND DIVERGENCE (heat, no charge)"
+        elif sigma > 0:
+            note = "metal (carries both)"
+        print(f"{eid:11s} {ct:6.2f} {sigma:11.3f} {kappa:12.3f} {kphon:12.3f}  {note}")
+
+    if args.plot:
+        out = _plot_transport(rows, Path(args.out))
+        print(f"\nsaved sigma-vs-kappa scatter -> {out}")
+    return 0
+
+
+def _plot_transport(rows, out_dir: Path) -> Path:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "transport.png"
+    sig = np.array([r[2] for r in rows])
+    kap = np.array([r[3] for r in rows])
+    fig, ax = plt.subplots(figsize=(7, 5))
+    ax.scatter(sig, kap, c=["crimson" if s == 0 and k > 0.02 else "steelblue"
+                            for s, k in zip(sig, kap)])
+    for eid, ct, s, k, kp in rows:
+        ax.annotate(eid, (s, k), fontsize=7, alpha=0.7)
+    ax.set_xlabel("electrical conductivity σ")
+    ax.set_ylabel("thermal conductivity κ")
+    ax.set_title("Electrical vs thermal conductivity (red = diamond divergence)")
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=120)
+    plt.close(fig)
+    return out_path
+
+
 def cmd_combine(args: argparse.Namespace) -> int:
     """Combine two materials and inspect the child (spec §4)."""
     shape = tuple(args.shape) if args.shape else (64, 64)
@@ -891,11 +954,19 @@ def cmd_distribution(args: argparse.Namespace) -> int:
     # phase-coherence superconducting Tc (a redundant backbone is phase-stiff -> higher Tc). The
     # SC transition itself is measured on demand -- see the `sc-sweep` view.
     ec = np.asarray(series["edge_connectivity"])
-    redundant = ec[ec >= 3]
     print(
         f"backbone:     {(ec > 0).mean()*100:.0f}% span (edge-connectivity>0), "
         f"{(ec >= 3).mean()*100:.0f}% redundant (>=3, high-Tc-capable); "
         f"max edge-connectivity {int(ec.max())}  -> SC Tc rides this (run `sc-sweep`)"
+    )
+
+    # Thermal vs electrical (M6b): the diamond divergence -- heat conductors that carry no charge.
+    sig = np.asarray(series["conductivity_continuous"])
+    kap = np.asarray(series["thermal_conductivity"])
+    divergent = (sig == 0) & (kap > 0.02)
+    print(
+        f"transport:    {divergent.mean()*100:.1f}% carry heat but NOT charge "
+        f"(diamond divergence: non-metallic but stiff); run `transport` to see them"
     )
 
     # 0/1 boolean series: a histogram of two spikes isn't illuminating.
@@ -1093,6 +1164,22 @@ def build_parser() -> argparse.ArgumentParser:
     p_proc.add_argument("--plot", action="store_true", help="save spin-microstructure plot")
     p_proc.add_argument("--out", default="out", help="output dir for plots")
     p_proc.set_defaults(func=cmd_process_compare)
+
+    p_trans = sub.add_parser(
+        "transport",
+        help="electrical vs thermal conductivity across elements; the diamond divergence (M6b)",
+    )
+    p_trans.add_argument(
+        "elements", nargs="*", default=None,
+        help="element ids to compare (default: all)",
+    )
+    p_trans.add_argument(
+        "--shape", type=int, nargs="+", default=None, help="lattice shape (default 48 48)"
+    )
+    p_trans.add_argument("--seed", type=int, default=0, help="UNIVERSE_SEED (default 0)")
+    p_trans.add_argument("--plot", action="store_true", help="save a σ-vs-κ scatter")
+    p_trans.add_argument("--out", default="out", help="output dir for plots")
+    p_trans.set_defaults(func=cmd_transport)
 
     p_comb = sub.add_parser("combine", help="combine two materials and inspect the child")
     p_comb.add_argument("a", help="first element/material id")

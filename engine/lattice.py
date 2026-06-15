@@ -91,6 +91,16 @@ MOMENT_HI: float = 1.30
 COH_LO: float = 0.60
 COH_HI: float = 1.25
 
+# --- metallicity / charge-carrier gating (M6b) ----------------------------------------
+# Per-cell **metallicity**: does the atom on this site carry *charge* (a metal) or only heat
+# (phonons, like an insulator/diamond)? Mapped from an element's ``conduction_tendency``. This
+# is what splits the two heat carriers (docs §4): charge conducts only through metallic cells
+# (so electrical conductivity / superconductivity ride the *metallic* backbone), while heat
+# (phonons) flows through all occupied matter — giving the diamond divergence (a stiff
+# non-metal conducts heat superbly but no charge) and a Wiedemann–Franz electronic channel.
+# Like ``cohesion`` it is a per-site property (defined everywhere; masked by occupancy at use).
+DEFAULT_METALLICITY: float = 1.0  # constructed lattices default to metallic (charge = occupied)
+
 # Number of distinct atom "kinds" a base lattice draws from. Drives bond rules later.
 DEFAULT_ATOM_TYPES: int = 4
 
@@ -127,16 +137,23 @@ class Lattice:
       cell can fill and must carry its own cohesion. A root fills it from ``bond_energy``;
       :func:`merge` carries it through domains. Optional at construction; if omitted defaults
       to uniform 1.0 everywhere (the keystone's plain lattice-gas).
+    * ``metallicity`` — float32, per-cell **charge-carrier quality** (M6b): whether the site's
+      atom carries charge (metal) or only heat (insulator). A root fills it from
+      ``conduction_tendency``; :func:`merge` carries it through domains. Charge conduction
+      (electrical, superconductivity) rides only cells above the metallic threshold; heat
+      (phonons) flows through all occupied matter. Optional; defaults to uniform 1.0 (metallic),
+      so a constructed lattice's charge backbone is just its occupied set (M2 behaviour).
 
     Frozen so a Lattice is a value object; transforms return new instances. Arrays are
     not deep-copied on construction — callers should not mutate arrays they hand in.
 
-    NB: ``cohesion`` is intentionally **excluded from** :meth:`structural_signature`. The
-    signature seeds combination/measurement RNG, and cohesion is *always* a deterministic
-    function of fields already hashed (``bond_energy`` for a root — which already shapes
-    ``occupied`` — and the parents' cohesion + merge mask for a combination), so it adds no
-    independent entropy; excluding it keeps every M0–M4 seed and stored value byte-identical.
-    Measurements that *use* cohesion (melting) fold a cohesion hash into their own seed.
+    NB: ``cohesion`` and ``metallicity`` are intentionally **excluded from**
+    :meth:`structural_signature`. The signature seeds combination/measurement RNG, and both are
+    *always* a deterministic function of fields already hashed (an element's ``bond_energy`` /
+    ``conduction_tendency`` — which already shape ``occupied``/``atom_type`` — and the parents'
+    fields + merge mask for a combination), so they add no independent entropy; excluding them
+    keeps every M0–M4 seed and stored value byte-identical. Measurements that *use* them
+    (melting) fold the relevant field hash into their own seed.
     """
 
     occupied: np.ndarray
@@ -145,6 +162,7 @@ class Lattice:
     mass: np.ndarray | None = None
     moment: np.ndarray | None = None
     cohesion: np.ndarray | None = None
+    metallicity: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         if self.mass is None:
@@ -157,6 +175,13 @@ class Lattice:
             # Backward-compatible default: uniform bond stiffness everywhere (plain lattice
             # gas — the keystone's substrate). Defined on empty cells too (site property).
             object.__setattr__(self, "cohesion", np.ones(self.occupied.shape, dtype=np.float32))
+        if self.metallicity is None:
+            # Backward-compatible default: metallic everywhere, so the charge backbone equals
+            # the occupied set (M2 behaviour for constructed/synthetic lattices).
+            object.__setattr__(
+                self, "metallicity",
+                np.full(self.occupied.shape, np.float32(DEFAULT_METALLICITY)),
+            )
         shapes = {
             self.occupied.shape,
             self.atom_type.shape,
@@ -164,6 +189,7 @@ class Lattice:
             self.mass.shape,
             self.moment.shape,
             self.cohesion.shape,
+            self.metallicity.shape,
         }
         if len(shapes) != 1:
             raise ValueError(f"lattice arrays disagree on shape: {shapes}")
@@ -210,6 +236,7 @@ class Lattice:
             mass=self.mass.copy(),
             moment=self.moment.copy(),
             cohesion=self.cohesion.copy(),
+            metallicity=self.metallicity.copy(),
         )
 
 
@@ -284,9 +311,15 @@ def generate_base(
     cohesion_val = COH_LO + (COH_HI - COH_LO) * _clamp01(bond_energy)
     cohesion = np.full(shape, np.float32(cohesion_val), dtype=np.float32)
 
+    # --- metallicity: per-site charge-carrier quality from conduction_tendency (M6b). ---
+    # Uniform for a root; merge blends it per-domain. Charge conducts only through metallic
+    # cells (see engine.properties.percolation), so a low-conduction element is an electrical
+    # insulator yet still conducts heat (phonons) through its occupied matter.
+    metallicity = np.full(shape, np.float32(_clamp01(conduction)), dtype=np.float32)
+
     return Lattice(
         occupied=occupied, atom_type=atom_type, spin=spin,
-        mass=mass, moment=moment, cohesion=cohesion,
+        mass=mass, moment=moment, cohesion=cohesion, metallicity=metallicity,
     )
 
 
@@ -341,9 +374,10 @@ def merge(
     mass = np.where(take_a, a.mass, b.mass).astype(np.float32)
     moment = np.where(take_a, a.moment, b.moment).astype(np.float32)
     cohesion = np.where(take_a, a.cohesion, b.cohesion).astype(np.float32)
+    metallicity = np.where(take_a, a.metallicity, b.metallicity).astype(np.float32)
     return Lattice(
         occupied=occupied, atom_type=atom_type, spin=spin,
-        mass=mass, moment=moment, cohesion=cohesion,
+        mass=mass, moment=moment, cohesion=cohesion, metallicity=metallicity,
     )
 
 
@@ -556,4 +590,5 @@ def relax(
         mass=lattice.mass,
         moment=lattice.moment,
         cohesion=lattice.cohesion,
+        metallicity=lattice.metallicity,
     )

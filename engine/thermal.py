@@ -505,8 +505,10 @@ def sample_xy_ensemble(
     phase-winding stiffness; a rigid (coherent) backbone keeps Υ high, a floppy one drives it to
     0. Deterministic in ``(structure, conditions)`` (spec §6).
     """
+    from .properties import percolation  # local import avoids a module cycle at import time
+
     T = conditions.temperature
-    cond = (lattice.occupied == 1)
+    cond = percolation.conducting_mask(lattice)  # charge backbone (occupied AND metallic, M6b)
     cond_f = cond.astype(np.float64)
     n_cond = int(cond.sum())
     shape = lattice.shape
