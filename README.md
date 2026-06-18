@@ -243,6 +243,43 @@ stiffness matrix `K` is the elastic analogue of M3's scalar Laplacian. Pressure-
   activated like pressure was in M5. (4) Cost: the modulus solve is ~M3-conductance scale (~65 ms),
   gated by solidity like melting; the dense floppy-mode `eigvalsh` is deliberately *not* stored.
 
+### Machine layer findings (the payoff loop — engineering, not new physics)
+
+The machine layer is an *engineering/design* milestone (spec §8), so there is no textbook value
+to recover — but the project's spirit still holds: real-ish equations, a legible payoff loop, and
+no faked physics. A machine is an **assembly of roles**; performance is **computed from the
+assigned materials' measured `.properties`** (`machines/` consumes the engine's outputs only; the
+engine never imports it — asserted in a test).
+
+- **Requirements emerge from the equations; they are never hard gates** (a deliberate design fork).
+  A non-conducting coil wire gives `R_wire → ∞ → current 0 → torque 0`; a non-ferromagnetic core
+  has zero flux; a core run above its Curie point demagnetizes (`flux = magnetism·max(0,1−T/Tc)`).
+  The physics punishes a wrong material directly — exactly the One-Principle stance ("measure, don't
+  assign") carried up to the assembly. A soft `0..1` per-role **suitability** score (the weighted
+  geometric mean of normalized requirement terms) is a *legibility readout only* — it explains
+  *why* a slot fits poorly, and never overrides the equations.
+- **The payoff loop is real and legible.** A better coil wire (higher `conductivity_continuous`)
+  yields strictly more torque *and* higher efficiency; a stronger `shaft` (higher M8 `strength`)
+  lifts the torque a weak shaft clips to its yield cap; a higher-`thermal_conductivity` wire sheds
+  I²R heat and tolerates more current before burnout (M6b genuinely matters). Performance is a
+  **curve over an `OperatingPoint`** (supply voltage, ambient T) — the machine-layer analogue of
+  `Conditions`: raise the voltage and torque climbs until it flattens at the I²R **burnout
+  ceiling** (`python -m tools.explorer motor iron copper tungsten --plot`).
+- **An honest tension we did not fake.** In *our* universe the best in-lattice electrical conductor
+  is tungsten (its dense backbone), so tungsten makes a slightly higher-torque coil wire than
+  copper even after the brittleness manufacturability penalty (`turns ∝ ductility`) — while the
+  *suitability readout* still ranks copper higher (tungsten's low ductility). We report the engine's
+  σ-ordering as-is rather than hand-tuning it to the real-world copper-wins story.
+- **Calibration constants are fixed display scales, not dials.** `WIRE_R0`, `R_LOAD`, `BURNOUT_K`,
+  `TORQUE_K`, `SHAFT_K`, `DUCT_REF` are the motor's design constants (supply circuit, geometry),
+  chosen so element-built motors land in legible ranges. Like `mechanical.MODULUS_SCALE` they
+  rescale every motor identically and change no ordering — they are not per-material knobs.
+- **Scope (honest).** Superconductivity is *not* consumed: a real `Tc` is measured on demand
+  (M6a), not stored on `.properties`, and this layer reads stored properties only. The framework is
+  intentionally thin (one concrete machine); a second machine would justify generalizing the
+  performance side (today only `motor.py` has equations). Roles take one material each (no
+  multi-material composites yet).
+
 ### M7 (deferred) findings (band gap falsified on our substrate — a reported negative)
 
 M7 (spectral / band gap via `eigh`, spec §5.6) was de-risked and **deferred** — the no-fudge norm
@@ -349,7 +386,18 @@ M5 made `occupied` thermal and asked melting to *emerge* — pressure-tested the
       substrate: a hard band gap needs a near-perfect crystal, and 5% vacancies close it
       completely). Returns later on a crystalline/3D substrate or as a conditions-driven property.
       See **M7 (deferred) findings**.
-- [ ] Machine layer (motor) + game shell follow (spec §8, §11).
+- [x] **Machine layer — the electric-motor worked example (spec §8).** The payoff loop: a
+      machine is an *assembly* of **roles** (`machines/roles.py`: a thin `Role`/`Requirement`/
+      `Blueprint` framework), and **performance is computed from the assigned materials' measured
+      properties** by real-ish equations (`machines/motor.py`) — never assigned. The motor's
+      `core`/`coil_wire`/`shaft` consume `magnetism`+`curie_temperature` (M3/M4),
+      `conductivity_continuous`+`melting_temperature`+`thermal_conductivity`+`ductility`
+      (M5/M6b/M8), and `strength` (M8) respectively — so it exercises nearly every milestone.
+      Requirements are **emergent, not gated** (a non-conducting wire → dead motor; an over-Curie
+      core demagnetizes); a soft per-role suitability score is a legibility readout only. The
+      engine never imports `machines` (asserted in `tests/test_motor.py`). See **Machine layer
+      findings**; `python -m tools.explorer motor iron copper tungsten --plot`.
+- [ ] Game shell follows (spec §11 M6 — inventory, crafting UI, building, progression).
 
 ## Running
 
@@ -397,6 +445,12 @@ python -m tools.explorer transport --plot
 # M8: strength vs ductility across elements -> the anti-correlation (spec 5.7). Refractory/dense
 # come out strong+brittle, soft/porous weak+ductile; both measured from the spring network.
 python -m tools.explorer mechanical --plot
+
+# Machine layer: build an electric motor from 3 materials (core/coil_wire/shaft) and see its
+# performance computed from their measured properties. --plot sweeps voltage -> torque climbs
+# into the I^2R burnout ceiling. A better wire/core/shaft visibly builds a better motor.
+python -m tools.explorer motor iron copper tungsten --plot
+python -m tools.explorer motor iron copper copper --voltage 2.0   # weak shaft clips the torque
 
 # Population view: distributions over many random combinations (spec §7 checkpoint)
 python -m tools.explorer distribution --n 500 --plot

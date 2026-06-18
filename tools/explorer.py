@@ -10,7 +10,8 @@ percolation transitions behind superconductivity) since M3; ``temperature-sweep`
 point) and ``process-compare`` (synthesis trajectories) since M4; ``melting-sweep`` (the
 occupancy order-disorder / melting transition) since M5; ``sc-sweep`` (phase-coherence /
 BKT superconducting Tc) and ``transport`` (electrical vs thermal conductivity — the diamond
-divergence) since M6; ``mechanical`` (strength vs ductility — the anti-correlation) since M8.
+divergence) since M6; ``mechanical`` (strength vs ductility — the anti-correlation) since M8;
+``motor`` (the electric-motor worked example — the machine-layer payoff loop) since the machine layer.
 
 Usage::
 
@@ -886,6 +887,86 @@ def _plot_mechanical(rows, out_dir: Path) -> Path:
     return out_path
 
 
+def cmd_motor(args: argparse.Namespace) -> int:
+    """Build an electric motor from three materials and show its performance (M-machine, spec §8).
+
+    The machine layer's payoff loop: assign a ``core`` / ``coil_wire`` / ``shaft`` material and the
+    motor's stats are *computed from their measured properties* — never assigned. A better wire
+    (low resistance, high melt, ductile, good heat-shedder), a stronger-flux core, and a stronger
+    shaft visibly build a better motor, and ``limited by`` tells you which physical limit caps it.
+    Requirements are emergent (a non-conducting wire -> dead motor), not gated; the suitability
+    scores are a soft legibility readout. ``--plot`` sweeps the supply voltage to show the torque
+    rise into the I^2R burnout ceiling.
+    """
+    from machines.motor import MOTOR, OperatingPoint, build_motor
+
+    shape = tuple(args.shape) if args.shape else (64, 64)
+    reg = Registry(universe_seed=args.seed, shape=shape)
+    role_ids = {"core": args.core, "coil_wire": args.coil_wire, "shaft": args.shaft}
+    for eid in set(role_ids.values()):
+        reg.add_element(eid)
+    mats = {role: reg.get(eid) for role, eid in role_ids.items()}
+    op = OperatingPoint(voltage=args.voltage, ambient_temperature=args.ambient)
+
+    perf = build_motor(mats["core"], mats["coil_wire"], mats["shaft"], op)
+
+    print(f"=== electric motor | seed={args.seed} shape={shape} ===")
+    print(f"operating point: voltage={op.voltage}  ambient_temperature={op.ambient_temperature}")
+    print("assignment:")
+    for role in MOTOR.role_names:
+        eid = role_ids[role]
+        terms = MOTOR.role(role).terms(mats[role])
+        term_str = "  ".join(f"{k}={v:.2f}" for k, v in terms.items())
+        print(f"  {role:10s} <- {eid:11s} suitability={perf.suitabilities[role]:.2f}  [{term_str}]")
+    print("\nperformance:")
+    print("  " + perf.summary().replace("\n", "\n  "))
+
+    if args.plot:
+        out = _plot_motor(mats, op, Path(args.out), label=f"{args.core}-{args.coil_wire}-{args.shaft}")
+        print(f"\nsaved torque/efficiency-vs-voltage sweep -> {out}")
+    return 0
+
+
+def _plot_motor(mats, op, out_dir: Path, *, label: str) -> Path:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    from machines.motor import OperatingPoint, build_motor
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"motor_{label}.png"
+    voltages = np.linspace(0.0, max(3.0, op.voltage * 3), 60)
+    torque, eff, current = [], [], []
+    for v in voltages:
+        p = build_motor(
+            mats["core"], mats["coil_wire"], mats["shaft"],
+            OperatingPoint(voltage=float(v), ambient_temperature=op.ambient_temperature),
+        )
+        torque.append(p.torque)
+        eff.append(p.efficiency)
+        current.append(p.current)
+
+    fig, ax = plt.subplots(figsize=(7, 5))
+    ax.plot(voltages, torque, label="torque", color="crimson")
+    ax.plot(voltages, current, label="current", color="steelblue", linestyle="--")
+    ax.set_xlabel("supply voltage")
+    ax.set_ylabel("torque / current")
+    ax2 = ax.twinx()
+    ax2.plot(voltages, eff, label="efficiency", color="seagreen", linestyle=":")
+    ax2.set_ylabel("efficiency")
+    ax2.set_ylim(0, 1)
+    ax.set_title(f"Motor performance vs voltage — {label}\n(torque climbs, then flattens at the I^2R burnout ceiling)")
+    ax.grid(alpha=0.3)
+    lines = ax.get_lines() + ax2.get_lines()
+    ax.legend(lines, [ln.get_label() for ln in lines], loc="upper left")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=120)
+    plt.close(fig)
+    return out_path
+
+
 def cmd_combine(args: argparse.Namespace) -> int:
     """Combine two materials and inspect the child (spec §4)."""
     shape = tuple(args.shape) if args.shape else (64, 64)
@@ -1261,6 +1342,26 @@ def build_parser() -> argparse.ArgumentParser:
     p_mech.add_argument("--plot", action="store_true", help="save a strength-vs-ductility scatter")
     p_mech.add_argument("--out", default="out", help="output dir for plots")
     p_mech.set_defaults(func=cmd_mechanical)
+
+    p_motor = sub.add_parser(
+        "motor",
+        help="build an electric motor from 3 materials; show its performance (machine layer, spec §8)",
+    )
+    p_motor.add_argument("core", help="element id for the magnetic core")
+    p_motor.add_argument("coil_wire", help="element id for the coil winding")
+    p_motor.add_argument("shaft", help="element id for the drive shaft")
+    p_motor.add_argument("--voltage", type=float, default=1.0, help="supply voltage (default 1.0)")
+    p_motor.add_argument(
+        "--ambient", type=float, default=0.5,
+        help="ambient temperature, reduced units (default 0.5)",
+    )
+    p_motor.add_argument(
+        "--shape", type=int, nargs="+", default=None, help="lattice shape (default 64 64)"
+    )
+    p_motor.add_argument("--seed", type=int, default=0, help="UNIVERSE_SEED (default 0)")
+    p_motor.add_argument("--plot", action="store_true", help="save a performance-vs-voltage sweep")
+    p_motor.add_argument("--out", default="out", help="output dir for plots")
+    p_motor.set_defaults(func=cmd_motor)
 
     p_comb = sub.add_parser("combine", help="combine two materials and inspect the child")
     p_comb.add_argument("a", help="first element/material id")
