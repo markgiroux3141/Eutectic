@@ -265,6 +265,19 @@ engine never imports it — asserted in a test).
   **curve over an `OperatingPoint`** (supply voltage, ambient T) — the machine-layer analogue of
   `Conditions`: raise the voltage and torque climbs until it flattens at the I²R **burnout
   ceiling** (`python -m tools.explorer motor iron copper tungsten --plot`).
+- **A suite of five machines, one per property family — the framework is genuinely reusable.** The
+  `roles.py` framework carries four more assemblies, each rewarding a *different* rare material (so
+  the property space has multiple distinct payoffs, not one "best material"): **heat sink**
+  (`heatsink.py`, thermal) — dissipation-per-mass `= thermal_conductivity/density`, where **carbon
+  wins** (electrically dead, so a useless coil wire, but the M6b *diamond divergence* makes it the
+  per-mass cooling champion); **power cable** (`cable.py`, electrical) — transmission efficiency +
+  ampacity + sag over a *distance* (tungsten conducts best but is heavy; light+conductive titanium
+  wins once weight counts; insulators deliver nothing); **electromagnet** (`electromagnet.py`,
+  magnetic) — lift force ∝ I² (quadratic), Curie-gated; **composite armor** (`armor.py`, mechanical)
+  — *solves* the M8 strength↔ductility dilemma: protection needs **both** a hard face and a ductile
+  backing, so the best plate combines opposite ends of the anti-correlation (one material can't fill
+  both — a tungsten backing is too brittle, an aluminium face too weak). The shared I²R-coil math
+  lives once in `machines/_electrical.py` (motor, electromagnet, cable).
 - **An honest tension we did not fake.** In *our* universe the best in-lattice electrical conductor
   is tungsten (its dense backbone), so tungsten makes a slightly higher-torque coil wire than
   copper even after the brittleness manufacturability penalty (`turns ∝ ductility`) — while the
@@ -397,6 +410,12 @@ M5 made `occupied` thermal and asked melting to *emerge* — pressure-tested the
       core demagnetizes); a soft per-role suitability score is a legibility readout only. The
       engine never imports `machines` (asserted in `tests/test_motor.py`). See **Machine layer
       findings**; `python -m tools.explorer motor iron copper tungsten --plot`.
+- [x] **Machine suite — four more machines, one per property family.** Proving the `roles.py`
+      framework reuses: **heat sink** (thermal — carbon wins, the diamond divergence), **power
+      cable** (electrical — loss/ampacity/sag over distance), **electromagnet** (magnetic — lift
+      ∝ I²), **composite armor** (mechanical — *solves* the M8 strength↔ductility dilemma via a
+      hard face + ductile backing). Shared coil math in `machines/_electrical.py`. See **Machine
+      layer findings**; `tests/test_machines.py`.
 - [ ] Game shell follows (spec §11 M6 — inventory, crafting UI, building, progression).
 
 ## Running
@@ -451,6 +470,14 @@ python -m tools.explorer mechanical --plot
 # into the I^2R burnout ceiling. A better wire/core/shaft visibly builds a better motor.
 python -m tools.explorer motor iron copper tungsten --plot
 python -m tools.explorer motor iron copper copper --voltage 2.0   # weak shaft clips the torque
+
+# More machines (one per property family). Heat sink: carbon wins cooling-per-mass (the diamond
+# divergence). Cable: tungsten conducts best but is heavy; titanium is the light sweet spot.
+# Electromagnet: lift ~ I^2, Curie-gated. Armor: a composite solves the strength<->ductility dilemma.
+python -m tools.explorer heatsink              # all elements, sorted by cooling-per-mass
+python -m tools.explorer cable                 # all elements, sorted by transmission efficiency
+python -m tools.explorer electromagnet iron copper
+python -m tools.explorer armor tungsten aluminium   # hard face + ductile backing
 
 # Population view: distributions over many random combinations (spec §7 checkpoint)
 python -m tools.explorer distribution --n 500 --plot

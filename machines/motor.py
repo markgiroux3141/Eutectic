@@ -39,8 +39,9 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any
 
+from ._electrical import coil_current
 from .roles import Blueprint, Requirement, Role, _props
 
 # --- The motor blueprint: roles + what each one wants (suitability is a soft readout) ------
@@ -87,7 +88,6 @@ BURNOUT_K: float = 0.15   # heat-shedding scale: P_burn = BURNOUT_K * kappa * (T
 DUCT_REF: float = 0.40    # ductility at which the wire is fully manufacturable (turns -> 1)
 TORQUE_K: float = 20.0    # torque constant: torque = TORQUE_K * flux * current * turns
 SHAFT_K: float = 5.0      # shaft yield scale: max transmissible torque = SHAFT_K * strength
-_EPS: float = 1e-12       # guards divide-by-zero for a perfect (zero-resistance) wire
 
 
 @dataclass(frozen=True)
@@ -154,23 +154,18 @@ def build_motor(
     shaft_p = _props(shaft)
     op = operating_point
 
-    # --- Coil: resistance, then the two current limits (Ohm vs burnout) -------------------
-    sigma = float(wire_p.get("conductivity_continuous", 0.0))
-    wire_resistance = WIRE_R0 / sigma if sigma > _EPS else math.inf
-    ohmic_current = op.voltage / (wire_resistance + R_LOAD)  # -> 0 as R_wire -> inf
-
-    t_melt = float(wire_p.get("melting_temperature", 0.0))
-    kappa = float(wire_p.get("thermal_conductivity", 0.0))
-    headroom = max(0.0, t_melt - op.ambient_temperature)
-    p_burn = BURNOUT_K * kappa * headroom
-    if math.isfinite(wire_resistance) and wire_resistance > _EPS:
-        burnout_current = math.sqrt(p_burn / wire_resistance)
-    else:
-        # No coil (open circuit): nothing flows, so nothing burns out either.
-        burnout_current = 0.0 if not math.isfinite(wire_resistance) else math.inf
-
-    current = min(ohmic_current, burnout_current)
-    limiting_factor = "burnout" if burnout_current < ohmic_current else "ohmic"
+    # --- Coil: resistance and the two current limits (Ohm vs I^2R burnout) ----------------
+    # Shared with the electromagnet and cable (machines._electrical). R_LOAD is the rest of the
+    # series circuit (the electromechanical load); a non-conducting wire gives R -> inf -> I = 0.
+    coil = coil_current(
+        wire_p, voltage=op.voltage, ambient_temperature=op.ambient_temperature,
+        r0=WIRE_R0, load_resistance=R_LOAD, burnout_k=BURNOUT_K,
+    )
+    wire_resistance = coil.resistance
+    ohmic_current = coil.ohmic_current
+    burnout_current = coil.burnout_current
+    current = coil.current
+    limiting_factor = coil.limiting_factor
 
     # --- Core: flux, with demagnetization as the operating temperature nears Curie --------
     magnetism = float(core_p.get("magnetism", 0.0))

@@ -11,7 +11,8 @@ point) and ``process-compare`` (synthesis trajectories) since M4; ``melting-swee
 occupancy order-disorder / melting transition) since M5; ``sc-sweep`` (phase-coherence /
 BKT superconducting Tc) and ``transport`` (electrical vs thermal conductivity — the diamond
 divergence) since M6; ``mechanical`` (strength vs ductility — the anti-correlation) since M8;
-``motor`` (the electric-motor worked example — the machine-layer payoff loop) since the machine layer.
+``motor`` (the electric-motor worked example — the machine-layer payoff loop) since the machine layer,
+joined by ``heatsink`` / ``cable`` / ``electromagnet`` / ``armor`` (the rest of the machine suite).
 
 Usage::
 
@@ -967,6 +968,100 @@ def _plot_motor(mats, op, out_dir: Path, *, label: str) -> Path:
     return out_path
 
 
+def _role_materials(args, ids):
+    """Seed a registry and return ``{id: Material}`` for the given element ids (machine views)."""
+    shape = tuple(args.shape) if args.shape else (64, 64)
+    reg = Registry(universe_seed=args.seed, shape=shape)
+    for eid in dict.fromkeys(ids):  # de-dup, preserve order
+        reg.add_element(eid)
+    return {eid: reg.get(eid) for eid in dict.fromkeys(ids)}, shape
+
+
+def cmd_heatsink(args: argparse.Namespace) -> int:
+    """Heat sink across elements — the thermal machine, where the diamond divergence pays off (spec §8).
+
+    A fin dissipates a heat load; the figure of merit is *specific dissipation* (cooling per unit
+    mass) = thermal_conductivity / density. Carbon — electrically dead, so a useless coil wire —
+    has the highest specific dissipation in the set: a heat conductor that carries no charge.
+    """
+    from machines.heatsink import ThermalLoad, build_heat_sink
+
+    ids = args.elements if args.elements else elements.all_ids()
+    mats, shape = _role_materials(args, ids)
+    load = ThermalLoad(heat_load=args.heat_load, ambient_temperature=args.ambient)
+
+    print(f"=== heat sink | seed={args.seed} shape={shape} ===")
+    print(f"heat_load={load.heat_load}  ambient={load.ambient_temperature}  (sorted by cooling-per-mass)")
+    print(f"{'elem':11s} {'spec_diss':>9} {'conduct':>9} {'T_peak':>8} {'max_load':>9}  note")
+    rows = [(eid, build_heat_sink(mats[eid], load)) for eid in ids]
+    for eid, p in sorted(rows, key=lambda r: -r[1].specific_dissipation):
+        note = "OVERHEATED" if p.overheated else ("diamond divergence" if eid == "carbon" else "")
+        print(f"{eid:11s} {p.specific_dissipation:9.5f} {p.conductance:9.4f} "
+              f"{p.peak_temperature:8.3f} {p.max_heat_load:9.4f}  {note}")
+    return 0
+
+
+def cmd_cable(args: argparse.Namespace) -> int:
+    """Power cable across elements — electrical transmission loss + ampacity + sag (spec §8).
+
+    Delivers power over a distance; efficiency = fraction not lost as I^2R heat, ampacity = the
+    current before it melts, mass ~ density*length (sag). High-sigma conductors transmit
+    efficiently; the light+conductive sweet spot beats the best raw conductor once weight matters.
+    """
+    from machines.cable import TransmissionLoad, build_cable
+
+    ids = args.elements if args.elements else elements.all_ids()
+    mats, shape = _role_materials(args, ids)
+    load = TransmissionLoad(power=args.power, distance=args.distance,
+                            voltage=args.voltage, ambient_temperature=args.ambient)
+
+    print(f"=== power cable | seed={args.seed} shape={shape} ===")
+    print(f"power={load.power}  distance={load.distance}  voltage={load.voltage}  "
+          f"ambient={load.ambient_temperature}  (sorted by efficiency)")
+    print(f"{'elem':11s} {'effcy':>7} {'resist':>8} {'ampacity':>9} {'mass':>8}  note")
+    rows = [(eid, build_cable(mats[eid], load)) for eid in ids]
+    for eid, p in sorted(rows, key=lambda r: -r[1].efficiency):
+        note = "OVERHEATED" if p.overheated else ("insulator" if p.resistance == float("inf") else "")
+        print(f"{eid:11s} {p.efficiency:7.3f} {p.resistance:8.2f} {p.ampacity:9.4f} "
+              f"{p.mass:8.1f}  {note}")
+    return 0
+
+
+def cmd_electromagnet(args: argparse.Namespace) -> int:
+    """Electromagnet from a core + coil — the magnetic machine; lift force ~ I^2 (spec §8)."""
+    from machines.electromagnet import OperatingPoint, build_electromagnet
+
+    mats, shape = _role_materials(args, [args.core, args.coil])
+    op = OperatingPoint(voltage=args.voltage, ambient_temperature=args.ambient)
+    perf = build_electromagnet(mats[args.core], mats[args.coil], op)
+
+    print(f"=== electromagnet | seed={args.seed} shape={shape} ===")
+    print(f"operating point: voltage={op.voltage}  ambient={op.ambient_temperature}")
+    print(f"  core <- {args.core}   coil <- {args.coil}")
+    print("\nperformance:")
+    print("  " + perf.summary().replace("\n", "\n  "))
+    return 0
+
+
+def cmd_armor(args: argparse.Namespace) -> int:
+    """Composite armor from a hard face + ductile backing — solves the M8 dilemma (spec §8).
+
+    Protection needs BOTH a hard (strong) face and a ductile backing; since strength and ductility
+    anti-correlate (M8), the best plate combines opposite ends — one material can't do both.
+    """
+    from machines.armor import build_armor
+
+    mats, shape = _role_materials(args, [args.hard_face, args.ductile_backing])
+    perf = build_armor(mats[args.hard_face], mats[args.ductile_backing], threat=args.threat)
+
+    print(f"=== composite armor | seed={args.seed} shape={shape} ===")
+    print(f"threat={args.threat}")
+    print(f"  hard_face <- {args.hard_face}   ductile_backing <- {args.ductile_backing}")
+    print("\nperformance:")
+    print("  " + perf.summary().replace("\n", "\n  "))
+    return 0
+
+
 def cmd_combine(args: argparse.Namespace) -> int:
     """Combine two materials and inspect the child (spec §4)."""
     shape = tuple(args.shape) if args.shape else (64, 64)
@@ -1362,6 +1457,45 @@ def build_parser() -> argparse.ArgumentParser:
     p_motor.add_argument("--plot", action="store_true", help="save a performance-vs-voltage sweep")
     p_motor.add_argument("--out", default="out", help="output dir for plots")
     p_motor.set_defaults(func=cmd_motor)
+
+    p_heat = sub.add_parser(
+        "heatsink", help="heat sink across elements; the diamond divergence pays off (spec §8)")
+    p_heat.add_argument("elements", nargs="*", default=None, help="element ids (default: all)")
+    p_heat.add_argument("--heat-load", dest="heat_load", type=float, default=0.10, help="heat load Q")
+    p_heat.add_argument("--ambient", type=float, default=0.5, help="ambient temperature")
+    p_heat.add_argument("--shape", type=int, nargs="+", default=None, help="lattice shape (default 64 64)")
+    p_heat.add_argument("--seed", type=int, default=0, help="UNIVERSE_SEED (default 0)")
+    p_heat.set_defaults(func=cmd_heatsink)
+
+    p_cable = sub.add_parser(
+        "cable", help="power cable across elements; transmission loss + ampacity + sag (spec §8)")
+    p_cable.add_argument("elements", nargs="*", default=None, help="element ids (default: all)")
+    p_cable.add_argument("--power", type=float, default=0.03, help="power to deliver")
+    p_cable.add_argument("--distance", type=float, default=1.0, help="transmission distance")
+    p_cable.add_argument("--voltage", type=float, default=1.0, help="supply voltage")
+    p_cable.add_argument("--ambient", type=float, default=0.5, help="ambient temperature")
+    p_cable.add_argument("--shape", type=int, nargs="+", default=None, help="lattice shape (default 64 64)")
+    p_cable.add_argument("--seed", type=int, default=0, help="UNIVERSE_SEED (default 0)")
+    p_cable.set_defaults(func=cmd_cable)
+
+    p_em = sub.add_parser(
+        "electromagnet", help="lifting magnet from a core + coil; lift force ~ I^2 (spec §8)")
+    p_em.add_argument("core", help="element id for the magnetic core")
+    p_em.add_argument("coil", help="element id for the coil winding")
+    p_em.add_argument("--voltage", type=float, default=1.0, help="supply voltage (default 1.0)")
+    p_em.add_argument("--ambient", type=float, default=0.5, help="ambient temperature (default 0.5)")
+    p_em.add_argument("--shape", type=int, nargs="+", default=None, help="lattice shape (default 64 64)")
+    p_em.add_argument("--seed", type=int, default=0, help="UNIVERSE_SEED (default 0)")
+    p_em.set_defaults(func=cmd_electromagnet)
+
+    p_armor = sub.add_parser(
+        "armor", help="composite armor (hard face + ductile backing); solves the M8 dilemma (spec §8)")
+    p_armor.add_argument("hard_face", help="element id for the hard face")
+    p_armor.add_argument("ductile_backing", help="element id for the ductile backing")
+    p_armor.add_argument("--threat", type=float, default=0.5, help="impact threat level (default 0.5)")
+    p_armor.add_argument("--shape", type=int, nargs="+", default=None, help="lattice shape (default 64 64)")
+    p_armor.add_argument("--seed", type=int, default=0, help="UNIVERSE_SEED (default 0)")
+    p_armor.set_defaults(func=cmd_armor)
 
     p_comb = sub.add_parser("combine", help="combine two materials and inspect the child")
     p_comb.add_argument("a", help="first element/material id")
