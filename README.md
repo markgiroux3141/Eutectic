@@ -200,6 +200,65 @@ on the BKT keystone first, then pressure-tested.
   of `structural_signature` (derived from `conduction_tendency`), so combination seeds are
   unchanged.
 
+### M8 findings (strength + ductility emerge from the bond network; the tradeoff falls out)
+
+M8 measures mechanics from a **central-force spring network** on the settled lattice: occupied
+cells are nodes, bonds join nearest- and next-nearest (diagonal) occupied neighbours with spring
+stiffness `k_ij = cohesion_i·cohesion_j` (the same `cohesion` that sets melting), and the
+stiffness matrix `K` is the elastic analogue of M3's scalar Laplacian. Pressure-tested the same way.
+
+- **Strength = shear modulus; ductility = coordination deficit — both measured, never assigned.**
+  Strength is the relaxed strain energy under an imposed face shear (a sparse `spsolve`, the vector
+  twin of the effective-resistance solve); ductility is `1 − z̄/z_max`, the density of
+  under-coordinated, slip-enabling sites (spec §5.7's "slip planes"). Ductility is *geometric* —
+  invariant to scaling every spring constant — so it is a genuine second axis, independent of the
+  cohesion magnitude that drives strength.
+- **The strength↔ductility anti-correlation FALLS OUT (the §5.7 headline) — not hardcoded.** Across
+  the element set the two are anti-correlated (corr ≈ −0.81), and the real ordering is recovered:
+  refractory/dense (tungsten, carbon, platinum) come out **strong + brittle**; soft/porous
+  (aluminium, lead, mercury, hydrogen) **weak + ductile**. The tradeoff is a consequence of
+  coordination (more constraints → higher modulus but fewer slip sites), not a rule we wrote.
+  `python -m tools.explorer mechanical`.
+- **Keystone — the rigidity transition, parameter-free.** A fully-occupied NN+diagonal lattice is
+  over-constrained: rigid, with **exactly zero** floppy modes beyond rigid-body; diluting it drives
+  the shear modulus to zero and opens floppy modes. Honest nuance (de-risked first): an NN-only
+  central-force *square* lattice is a shear *mechanism* even when full, so the diagonals brace it;
+  the resulting **generic shear-rigidity threshold sits at coordination z≈6–7**, above the
+  mean-field Maxwell isostatic `z = 2d = 4` (the square lattice's bonds are partially redundant —
+  Maxwell counting is the *wrong* cheap proxy here, and we say so). Our ~0.6-fill materials
+  therefore live in the **marginally-rigid** regime: moduli are small but cleanly discriminating
+  (best resolved at 64²; at smaller lattices many solids dip below the threshold and read 0).
+- **The cheap stored ductility tracks the exact (expensive) mechanics — the "coarse stored,
+  accurate instrument" split (as for Curie/melting).** The rigorous ductility is the floppy-mode
+  fraction (nullity of `K` beyond rigid-body — a dense `eigvalsh`), but it costs 5–13 s/material and
+  is near-zero for *every* true solid (it separates solids from liquids, not brittle from ductile).
+  The cheap coordination deficit correlates with it (Pearson ≈ 0.93, Spearman ≈ 0.98 over the
+  elements) **and** resolves solids better, so it is the stored value; `floppy_fraction` stays an
+  explorer/validation instrument.
+- **Scope (honest).** (1) Marginally-rigid regime → small absolute moduli; **bond-bending (angular)
+  forces** would lower the threshold toward percolation and stiffen things — an optional future
+  enrichment, not needed for the milestone. (2) `MODULUS_SCALE` is a fixed display constant (rescales
+  every material identically, changes no ordering), not a tuned dial. (3) **Stress σ is the
+  conjugate condition** (strain → nonlinear response / fracture); it rides inert for now, to be
+  activated like pressure was in M5. (4) Cost: the modulus solve is ~M3-conductance scale (~65 ms),
+  gated by solidity like melting; the dense floppy-mode `eigvalsh` is deliberately *not* stored.
+
+### M7 (deferred) findings (band gap falsified on our substrate — a reported negative)
+
+M7 (spectral / band gap via `eigh`, spec §5.6) was de-risked and **deferred** — the no-fudge norm
+in action, same as the rejected Kawasaki SC fix. The keystone passed (a staggered ±Δ on-site
+potential on a *full* periodic square lattice gives `gap = 2Δ` to ~1e-14, parameter-free), and the
+honest detector is gap/level-spacing (a metal's raw HOMO-LUMO gap → 0 like 1/N). **But the killer is
+dilution:** our materials are ~0.6 fill, and a staggered potential that opens a clean gap at fill
+1.00 gives **gap = 0 already at fill 0.95** — 5% vacancies (dangling bonds → mid-gap states) close it
+and push the density-of-states at the Fermi level *above* the clean-metal value. A hard band gap is a
+property of a near-perfect crystal; a 37%-vacancy network is a defect-dominated mess (physically
+correct — cf. amorphous silicon, and silicon metallizing on melting). Both candidate metallicity→
+on-site mappings gave `gap = 0` for every element including silicon/carbon. M7 returns only on a
+substrate a gap can live on (near-full-fill 2-sublattice crystalline order and/or 3D), ideally as a
+*conditions* property (gap closing as T/P opens vacancies). M8 (mechanical) was chosen as the next
+milestone instead — the property a diluted percolation network expresses *natively*.
+
 ### M5 findings (crystalline melting falls out, and its honest scope)
 
 M5 made `occupied` thermal and asked melting to *emerge* — pressure-tested the same way as M4.
@@ -280,8 +339,16 @@ M5 made `occupied` thermal and asked melting to *emerge* — pressure-tested the
       gains `thermal_conductivity`; `percolation.py` splits the charge mask (metallic) from the
       solid mask (matter, byte-identical for melting). See **M6 findings**;
       `python -m tools.explorer transport --plot`.
-- [ ] M7 — Spectral (band gap → conductor/semiconductor/insulator). · M8 — Mechanical
-      (strength/ductility).
+- [x] **M8 — Mechanical (strength + ductility from the bond network).** A central-force spring
+      network on the occupied NN+diagonal bonds (stiffness `k_ij = cohesion_i·cohesion_j`);
+      **strength** = the shear modulus (a sparse elastic solve, the vector analogue of M3's
+      Laplacian), **ductility** = the coordination deficit (the density of slip-enabling
+      under-coordinated sites). The strength↔ductility anti-correlation *falls out* (spec §5.7);
+      both are stored, gated by solidity. See **M8 findings**; `python -m tools.explorer mechanical`.
+- [~] **M7 — Spectral (band gap)** — **deferred** (de-risked and falsified on our ~0.6-fill
+      substrate: a hard band gap needs a near-perfect crystal, and 5% vacancies close it
+      completely). Returns later on a crystalline/3D substrate or as a conditions-driven property.
+      See **M7 (deferred) findings**.
 - [ ] Machine layer (motor) + game shell follow (spec §8, §11).
 
 ## Running
@@ -326,6 +393,10 @@ python -m tools.explorer sc-sweep iron copper --plot
 # M6b: electrical vs thermal conductivity across elements -> the diamond divergence (carbon
 # conducts heat superbly but carries no charge; metals carry both via Wiedemann-Franz).
 python -m tools.explorer transport --plot
+
+# M8: strength vs ductility across elements -> the anti-correlation (spec 5.7). Refractory/dense
+# come out strong+brittle, soft/porous weak+ductile; both measured from the spring network.
+python -m tools.explorer mechanical --plot
 
 # Population view: distributions over many random combinations (spec §7 checkpoint)
 python -m tools.explorer distribution --n 500 --plot

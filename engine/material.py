@@ -26,7 +26,7 @@ from . import process as process_mod
 from . import thermal as thermal_mod
 from .lattice import DEFAULT_SHAPE_2D, Lattice
 from .process import Process
-from .properties import conductance, ising, percolation, scalar
+from .properties import conductance, ising, mechanical, percolation, scalar
 from .rng import UNIVERSE_SEED, hash_str, mix
 
 if TYPE_CHECKING:  # avoid import cost / keep engine layering explicit
@@ -79,6 +79,16 @@ _CURIE_SALT: int = 0x43           # 'C'
 # later option — see README "M6 findings".)
 
 MELT_GATE_FLOOR: float = 0.40     # largest-cluster fraction: below this, no connected solid
+
+# --- Mechanical (M8): strength + ductility from the bond network, gated like melting ----
+# Strength (shear modulus) is a sparse elastic solve (~M3-conductance cost); below a connected
+# solid there is no load-bearing network, so we gate the solve behind ``largest_cluster_fraction``
+# exactly as melting is — a dispersed structure gets strength = bulk_modulus = 0.0 and pays
+# nothing. Ductility (the coordination deficit) is O(N)-cheap and meaningful for any structure, so
+# it is always measured (a porous/dispersed lattice is honestly very ductile/floppy). The exact
+# floppy-mode fraction (a dense eigendecomposition) is NOT stored — too costly per material — and
+# lives in the explorer / tests as the rigorous mechanics behind the cheap stored ductility (M8).
+MECH_GATE_FLOOR: float = 0.40     # same connected-solid floor as melting
 # Bracket tight around the accurate analytic T_m ≈ 2.269·J0·⟨coh²⟩ (the de-risk showed the
 # prediction is good), so a few points give a usable grid. Deliberately lean — the stored Tm
 # is honestly *coarse* (like the stored Curie point); the explorer's `melting-sweep` gives the
@@ -174,6 +184,21 @@ def melting_temperature(lattice: Lattice, reference_solidity: float) -> float:
     return 0.0 if tm is None else tm
 
 
+def mechanical_properties(lattice: Lattice, reference_solidity: float) -> dict[str, float]:
+    """Stored mechanical properties (M8, spec §5.7), gated by solidity for cost.
+
+    ``ductility`` (the coordination deficit) is always measured — it is O(N)-cheap and a
+    dispersed structure is honestly floppy. The elastic moduli (``strength`` = shear modulus and
+    ``bulk_modulus``) require a sparse solve, so they are gated: a structure with no connected
+    solid (``reference_solidity < MECH_GATE_FLOOR``) has no load-bearing network and reads
+    ``0.0``, skipping the solve. ``reference_solidity`` is passed in so we reuse the
+    ``largest_cluster_fraction`` already measured. Deterministic (no RNG; no eigendecomposition).
+    """
+    if reference_solidity < MECH_GATE_FLOOR:
+        return {"strength": 0.0, "ductility": mechanical.ductility(lattice), "bulk_modulus": 0.0}
+    return mechanical.measure(lattice)
+
+
 def measure_properties(lattice: Lattice) -> dict[str, float]:
     """Run the available extractors on a settled lattice and quantize (spec §4.4, §6.4).
 
@@ -183,8 +208,9 @@ def measure_properties(lattice: Lattice) -> dict[str, float]:
     ``curie_temperature`` — the first *condition-dependent* property, measured as an ensemble
     observable (a temperature sweep) rather than read off the snapshot (docs §2). M5 adds the
     ``melting_temperature`` — the occupancy order-disorder point, the positional twin of Curie
-    (gated by solidity for cost). Every value is measured from the structure, never assigned.
-    M6+ extend further.
+    (gated by solidity for cost). M6 adds thermal conductivity; M8 adds ``strength`` (shear
+    modulus) and ``ductility`` (coordination deficit) from the central-force bond network (also
+    gated by solidity). Every value is measured from the structure, never assigned.
     """
     magnetism = ising.magnetism(lattice)
     solidity = percolation.largest_cluster_fraction(lattice)
@@ -200,6 +226,10 @@ def measure_properties(lattice: Lattice) -> dict[str, float]:
         "curie_temperature": quantize(curie_temperature(lattice, magnetism)),
         "melting_temperature": quantize(melting_temperature(lattice, solidity)),
     }
+    # Mechanical (M8): strength (shear modulus) + ductility (coordination deficit), measured
+    # from the central-force bond network, gated by solidity for cost (like melting).
+    for key, value in mechanical_properties(lattice, solidity).items():
+        props[key] = quantize(value)
     # Conducting-graph properties: one per-axis solve, several derived values (§5.3).
     # ``edge_connectivity`` is the structural input to M6 superconductivity (a redundant backbone
     # is phase-stiff -> higher Tc); the SC transition itself is measured on demand (engine.thermal

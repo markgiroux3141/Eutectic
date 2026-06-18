@@ -7,9 +7,9 @@ sections and `docs/conditions-and-properties.md`).
 
 ## Current status (as of this handoff)
 
-- **Branch:** `main`. **HEAD:** `bfa9266` (M6b). Tree clean, pushed to origin (GitHub: `Eutectic`).
-- **Tests:** 126 passing (`.\.venv\Scripts\python.exe -m pytest`), ~60s. Determinism test must always stay green.
-- **Done:** M0 foundations → M1 combine pipeline → M2 density/percolation → M3 magnetism + (retired) SC proxy → M4 conditions + Curie point → M5 thermal occupancy/melting → M6a honest superconductivity (XY/BKT) → M6b thermal conductivity. Plus the process layer (synthesis as a trajectory).
+- **Branch:** `main`. **HEAD:** `ba9960e` (M6b docs); **M8 built on top, uncommitted** (awaiting the go-ahead).
+- **Tests:** 135 passing (`.\.venv\Scripts\python.exe -m pytest`), ~71s. Determinism test must always stay green.
+- **Done:** M0 foundations → M1 combine pipeline → M2 density/percolation → M3 magnetism + (retired) SC proxy → M4 conditions + Curie point → M5 thermal occupancy/melting → M6a honest superconductivity (XY/BKT) → M6b thermal conductivity → **M8 mechanical (strength = shear modulus + ductility = coordination deficit, from a central-force spring network; the strength↔ductility anti-correlation falls out)**. Plus the process layer (synthesis as a trajectory). **M7 (spectral / band gap) was de-risked and DEFERRED** — falsified on the ~0.6-fill substrate (5% vacancies close any gap); see README "M7 (deferred) findings".
 - **Read in this order to get oriented:** `materials-engine-spec.md` (§1 = the ONE principle), `README.md` (status + every "M_ findings" section — these are the honest-scope record), `docs/conditions-and-properties.md` (the conditions/transport plan; §6 = validation discipline, §7 = milestone sequence).
 
 ## The two cultural non-negotiables
@@ -57,9 +57,9 @@ Full detail in README "findings". The caveats you must not forget:
 
 ## What's next (roadmap)
 
-- **M7 — Spectral / band gap** (docs §4 Tier 2, spec §5.6): eigenvalues of a lattice Hamiltonian (`numpy.linalg.eigh`) → conductor/semiconductor/insulator; gap shrinks with T/P. New "engine" (spectral). Bonus: would replace M6b's binary metallicity gate with a real band-structure semiconductor notion.
-- **M8 — Mechanical** (spec §5.7): strength / ductility / fracture from bond-graph rigidity; the strength↔ductility anti-correlation should *fall out* (don't hardcode it). Stress σ is its conjugate condition.
-- **Machine layer** (spec §8): the motor worked-example — roles + property requirements + real-ish performance equations consuming `Material.properties`. Then the game shell.
+- **Machine layer** (spec §8): the motor worked-example — roles + property requirements + real-ish performance equations consuming `Material.properties`. **This is the recommended next step** — it's the payoff loop (a rare material visibly builds a better machine) and it now has strength/ductility (M8) to consume. Then the game shell (the interactive interface; the engine + explorer already generate-and-view today).
+- **M8 follow-ups (optional enrichments, not blockers):** activate **stress σ as a condition** (strain → nonlinear response / fracture), the conjugate that currently rides inert like P did pre-M5; add **bond-bending (angular) forces** to lower the shear-rigidity threshold toward percolation (our materials are currently *marginally* rigid, so absolute moduli are small).
+- **M7 — Spectral / band gap: DEFERRED** (de-risked, falsified on the diluted substrate). Revive only on a crystalline/3D substrate or as a conditions-driven property (gap closing with T/P). See `memory/m7-spectral-deferred.md` and README "M7 (deferred) findings".
 - **Parked (don't start without the user):** the **anisotropy + hysteresis** block (real coercivity / the neodymium payoff — true hard-magnet behaviour, currently only kinetic remanence); making **`process` part of material identity** + registry caching-by-process (currently id derives from lineage only).
 - **Tier-3 "do NOT hack into core"** (docs §4): radioactivity (authored cause, emergent consequences), pH/corrosion (needs a chemistry layer). Flagged as separate, high-hack-risk.
 

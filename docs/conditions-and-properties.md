@@ -105,10 +105,19 @@ engine.
   conductor, the precise Tc is **measured on demand** (explorer `sc-sweep`), not stored per
   material. Supersedes `superconductivity-status` / README "M6 findings".
 - **band gap → conductor / semiconductor / insulator** — eigenvalues of a lattice
-  Hamiltonian (spec §5.6); gap shrinks with T/P. New engine (`numpy.linalg.eigh`).
-- **strength / ductility / fracture** — rigidity of the bond graph; ductility = low-energy
-  shear rearrangements; strength↔ductility anti-correlation should fall out (spec §5.7).
-  Stress σ is its conjugate condition.
+  Hamiltonian (spec §5.6); gap shrinks with T/P. **DEFERRED (M7 de-risk):** falsified on our
+  ~0.6-fill substrate — a hard gap needs a near-perfect crystal and 5% vacancies close it (dangling
+  bonds → mid-gap states). Returns on a crystalline/3D substrate, ideally as a conditions property.
+  See README "M7 (deferred) findings".
+- **strength / ductility / fracture — ✅ DONE (M8).** A **central-force spring network** on the
+  occupied NN+diagonal bonds (`engine/properties/mechanical.py`, stiffness from `cohesion`):
+  **strength** = the shear modulus (a sparse elastic solve, the vector analogue of M3's Laplacian),
+  **ductility** = the coordination deficit (slip-site density). The strength↔ductility
+  anti-correlation *falls out* (corr ≈ −0.81; tungsten/carbon strong+brittle, aluminium/mercury
+  weak+ductile). Honest scope: the generic shear-rigidity threshold (z≈6–7) sits above mean-field
+  Maxwell (z=2d=4), so materials are marginally rigid; the exact floppy-mode fraction is too costly
+  to store (kept as the explorer/validation instrument). **Stress σ is its conjugate condition** —
+  inert for now, to be activated like pressure was in M5.
 
 **Tier 3 — does NOT fall out cleanly (defer / separate layer; do not hack into core)**
 - **radioactivity** — which `atom_type`s are unstable is *authored*, not measured (real
@@ -216,9 +225,14 @@ demo'd in the explorer before moving on.
   (Wiedemann–Franz) + phononic (stiffness/mass-weighted Laplacian); charge gated by a per-cell
   metallicity field (charge mask vs solid mask split in `percolation`) → the diamond divergence
   (heat without charge). M2/M3 re-validated under the gating.
-- **M7 — Spectral.** Band gap → conductor/semiconductor/insulator (`eigh`).
-- **M8 — Mechanical.** Strength / ductility / fracture; confirm the strength↔ductility
-  anti-correlation emerges.
+- **M7 — Spectral. DEFERRED.** Band gap → conductor/semiconductor/insulator (`eigh`) was
+  de-risked and falsified on the ~0.6-fill substrate (5% vacancies close the gap); returns on a
+  crystalline/3D substrate. See README "M7 (deferred) findings".
+- **M8 — Mechanical. ✅ DONE.** Strength (shear modulus of the central-force bond network) +
+  ductility (coordination deficit) from `engine/properties/mechanical.py`; the strength↔ductility
+  anti-correlation **emerges** (corr ≈ −0.81), recovering the real ordering (refractory→strong/brittle,
+  porous→weak/ductile). Stored, gated by solidity; stress σ is the conjugate condition (inert for now).
+  See README "M8 findings".
 
 Then the spec's machine layer (motor) and game shell follow.
 

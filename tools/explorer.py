@@ -10,7 +10,7 @@ percolation transitions behind superconductivity) since M3; ``temperature-sweep`
 point) and ``process-compare`` (synthesis trajectories) since M4; ``melting-sweep`` (the
 occupancy order-disorder / melting transition) since M5; ``sc-sweep`` (phase-coherence /
 BKT superconducting Tc) and ``transport`` (electrical vs thermal conductivity — the diamond
-divergence) since M6.
+divergence) since M6; ``mechanical`` (strength vs ductility — the anti-correlation) since M8.
 
 Usage::
 
@@ -820,6 +820,72 @@ def _plot_transport(rows, out_dir: Path) -> Path:
     return out_path
 
 
+def cmd_mechanical(args: argparse.Namespace) -> int:
+    """Strength vs ductility across elements — the anti-correlation made visible (M8, spec §5.7).
+
+    Strength is the shear modulus of the central-force bond network; ductility is the
+    coordination deficit (the density of slip-enabling under-coordinated sites). Neither is
+    assigned — both are measured from structure — yet refractory/dense elements come out
+    strong+brittle and soft/porous ones weak+ductile, and the tradeoff (anti-correlation) falls
+    out. Sorted by strength; the printed correlation is the headline check.
+    """
+    shape = tuple(args.shape) if args.shape else (64, 64)
+    reg = Registry(universe_seed=args.seed, shape=shape)
+    ids = args.elements if args.elements else elements.all_ids()
+    for eid in ids:
+        reg.add_element(eid)
+
+    rows = []
+    for eid in ids:
+        p = reg.get(eid).properties
+        coh = float(np.asarray(reg.get(eid).lattice.cohesion).mean())
+        rows.append((eid, p["strength"], p["ductility"], p["bulk_modulus"], coh))
+
+    print(f"=== mechanical: strength vs ductility | seed={args.seed} shape={shape} ===")
+    print(f"(strength = shear modulus; ductility = coordination deficit; both measured)")
+    print(f"{'elem':11s} {'strength':>9} {'ductility':>9} {'bulk_mod':>9} {'cohesion':>9}  note")
+    for eid, s, d, b, coh in sorted(rows, key=lambda r: -r[1]):
+        note = "strong/brittle" if (s > 0.02 and d < 0.40) else (
+            "weak/ductile" if s < 0.01 else "")
+        print(f"{eid:11s} {s:9.4f} {d:9.4f} {b:9.4f} {coh:9.3f}  {note}")
+
+    strengths = np.array([r[1] for r in rows])
+    ducts = np.array([r[2] for r in rows])
+    if strengths.std() > 0 and ducts.std() > 0:
+        corr = float(np.corrcoef(strengths, ducts)[0, 1])
+        print(f"\nstrength<->ductility correlation = {corr:+.3f} "
+              f"({'anti-correlated -> the spec 5.7 tradeoff emerges' if corr < -0.3 else 'weak'})")
+
+    if args.plot:
+        out = _plot_mechanical(rows, Path(args.out))
+        print(f"\nsaved strength-vs-ductility scatter -> {out}")
+    return 0
+
+
+def _plot_mechanical(rows, out_dir: Path) -> Path:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "mechanical.png"
+    s = np.array([r[1] for r in rows])
+    d = np.array([r[2] for r in rows])
+    fig, ax = plt.subplots(figsize=(7, 5))
+    ax.scatter(d, s, c="steelblue")
+    for eid, st, du, b, coh in rows:
+        ax.annotate(eid, (du, st), fontsize=7, alpha=0.7)
+    ax.set_xlabel("ductility (coordination deficit)")
+    ax.set_ylabel("strength (shear modulus)")
+    ax.set_title("Strength vs ductility — the anti-correlation (spec §5.7)")
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=120)
+    plt.close(fig)
+    return out_path
+
+
 def cmd_combine(args: argparse.Namespace) -> int:
     """Combine two materials and inspect the child (spec §4)."""
     shape = tuple(args.shape) if args.shape else (64, 64)
@@ -1180,6 +1246,21 @@ def build_parser() -> argparse.ArgumentParser:
     p_trans.add_argument("--plot", action="store_true", help="save a σ-vs-κ scatter")
     p_trans.add_argument("--out", default="out", help="output dir for plots")
     p_trans.set_defaults(func=cmd_transport)
+
+    p_mech = sub.add_parser(
+        "mechanical",
+        help="strength vs ductility across elements; the anti-correlation (M8, spec §5.7)",
+    )
+    p_mech.add_argument(
+        "elements", nargs="*", default=None, help="element ids to compare (default: all)"
+    )
+    p_mech.add_argument(
+        "--shape", type=int, nargs="+", default=None, help="lattice shape (default 64 64)"
+    )
+    p_mech.add_argument("--seed", type=int, default=0, help="UNIVERSE_SEED (default 0)")
+    p_mech.add_argument("--plot", action="store_true", help="save a strength-vs-ductility scatter")
+    p_mech.add_argument("--out", default="out", help="output dir for plots")
+    p_mech.set_defaults(func=cmd_mechanical)
 
     p_comb = sub.add_parser("combine", help="combine two materials and inspect the child")
     p_comb.add_argument("a", help="first element/material id")
