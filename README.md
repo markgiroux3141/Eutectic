@@ -448,8 +448,25 @@ engine measures it"). See `chemistry-engine-spec.md`.
       (multi-center molecules like C₂H₆ need the general search, spec §19.2). See
       `tests/test_{geometry,bond_type,stoichiometry}.py`; `python -m tools.chem_explorer
       build-molecule H O`.
-- [ ] **C2 — Compound → lattice + integration** (the load-bearing risk: derive old affinities from
-      descriptors, keep M0–M8 green). Then C3 thermo, C4 kinetics, C5 reaction network.
+- [x] **C2 — Compound → lattice + integration** (`chemistry/crystal.py`). The bridge: a compound's
+      crystal is an `engine.lattice.Lattice` whose **per-cell fields are set by the bonding**, so
+      the *existing* extractors measure it **unchanged**. Packing from bond character (ionic
+      rock-salt / metallic close-packed / covalent network); `metallicity` from character (→ NaCl
+      insulates, Cu conducts); `moment` from **localized (d/f) unpaired electrons** (→ Fe magnetic,
+      Cu/diamond/NaCl not — s/p electrons are quenched by bonding); `cohesion`/`mass` drive
+      melting/strength/phonon-κ. **Keystone proven:** NaCl insulates, Cu conducts, diamond is an
+      electrical insulator that beats metals on phonon heat conduction (the M6b divergence), Fe
+      magnetises from unpaired electrons. **Affinity-derivation finding (the make-or-break, reported
+      not buried):** deriving the *existing elements'* authored affinities from descriptors
+      reproduces conduction moderately (+0.66) but **magnetism does not derive** — ferromagnetism is
+      the Stoner criterion, not unpaired count (Cr has Fe's unpaired count but is antiferromagnetic),
+      and cohesion (many-body) anti-correlates. So `engine/elements.py` is **untouched** (authored
+      affinities kept as reference data) → **M0–M8 stay byte-identical green**; chemistry-derived
+      fields apply only to new compounds. See `tests/test_crystal_properties.py`; `python -m
+      tools.chem_explorer measure-compound Na Cl`. (M7 band-gap revival deferred — needs a 3D
+      network substrate.)
+- [ ] **C3 — Reaction thermodynamics** (ΔG feasibility, equilibria, T/P/concentration). Then C4
+      kinetics & catalysts, C5 reaction network / tech tree.
 
 ## Running
 

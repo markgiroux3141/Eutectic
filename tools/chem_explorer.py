@@ -13,13 +13,16 @@ Commands grow with the C0..C5 ladder. C0 ships:
 * ``build-molecule`` — form the minimum-energy compound of two elements: the settled bonding
                        graph, stoichiometry/formula, bond characters/orders/energies, VSEPR
                        geometry, and formation energy (spec §16).
+* ``measure-compound`` — the integration view (C2): build a compound's crystal lattice and run
+                       the **materials** extractors on it — chemistry in, bulk properties out.
 
 Usage::
 
     python -m tools.chem_explorer list
     python -m tools.chem_explorer inspect-atom O
     python -m tools.chem_explorer build-molecule H O
-    python -m tools.chem_explorer build-molecule Na Cl
+    python -m tools.chem_explorer measure-compound Cu        # element crystal
+    python -m tools.chem_explorer measure-compound Na Cl     # binary compound
 """
 
 from __future__ import annotations
@@ -28,7 +31,7 @@ import argparse
 import sys
 from typing import Sequence
 
-from chemistry import atoms, molecule
+from chemistry import atoms, crystal, molecule
 from chemistry.molecule import Molecule
 
 
@@ -110,6 +113,41 @@ def _cmd_build(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_measure(args: argparse.Namespace) -> int:
+    # Local imports: only this command touches the materials engine (chemistry -> engine bridge).
+    from engine import material
+    from engine.lattice import relax
+
+    if args.b is None:
+        try:
+            lat = crystal.element_crystal(args.a)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        label = args.a
+    else:
+        m = molecule.form_binary(args.a, args.b)
+        if not isinstance(m, Molecule):
+            print(f"{args.a} + {args.b}: no compound forms - {m.reason}")
+            return 0
+        lat = crystal.compound_crystal(m)
+        label = m.formula
+
+    # Settle spins before measuring (a crystal is a settled lattice too, spec §1).
+    settled = relax(lat, seed=0xC2)
+    props = material.measure_properties(settled)
+
+    print(f"compound crystal: {label}")
+    print("=" * 56)
+    print("  measured by the EXISTING materials extractors (unchanged):")
+    for key in ("fill_fraction", "density", "atomic_mass", "conductivity",
+                "conductivity_continuous", "thermal_conductivity", "thermal_conductivity_phonon",
+                "magnetism", "curie_temperature", "melting_temperature", "strength", "ductility"):
+        if key in props:
+            print(f"    {key:<28} {props[key]}")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="chem_explorer", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -125,6 +163,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     p_build.add_argument("a", help="first element symbol")
     p_build.add_argument("b", help="second element symbol")
     p_build.set_defaults(func=_cmd_build)
+
+    p_meas = sub.add_parser("measure-compound",
+                            help="build a compound's crystal and run the materials extractors")
+    p_meas.add_argument("a", help="element symbol (single -> element crystal)")
+    p_meas.add_argument("b", nargs="?", default=None, help="optional second element (binary compound)")
+    p_meas.set_defaults(func=_cmd_measure)
 
     args = parser.parse_args(argv)
     return args.func(args)

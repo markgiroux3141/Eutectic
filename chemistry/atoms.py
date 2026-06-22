@@ -126,6 +126,46 @@ def bonding_capacity(z: int) -> int:
     return min(ve, octet_size(z) - ve)
 
 
+def unpaired_electrons(z: int, charge: int = 0) -> int:
+    """Unpaired electrons by Hund's rule — the **local magnetic moment** source (spec §9).
+
+    Fills ``z − charge`` electrons (so ``charge`` gives an ion: Na⁺→0, Cl⁻→0, Fe²⁺→4) and
+    counts singly-occupied orbitals per subshell: a subshell of ``m = 2l+1`` orbitals holding
+    ``k`` electrons has ``k`` unpaired if ``k ≤ m`` else ``2m − k`` (Hund: fill singly first).
+    Fe (3d⁶) → 4, O (2p⁴) → 2, closed shells → 0.
+
+    NB this is the moment **magnitude**, which is physically right even for Cr (it *has* a big
+    local moment). What it does *not* tell you is the sign of the exchange coupling (ferro- vs
+    antiferromagnetic) — see the C2 magnetism caveat in :mod:`chemistry.crystal`.
+    """
+    total = 0
+    for (_n, l, c) in configuration(z - charge):
+        m = 2 * l + 1
+        total += c if c <= m else (2 * m - c)
+    return total
+
+
+def localized_unpaired_electrons(z: int, charge: int = 0) -> int:
+    """Unpaired electrons in the **d/f** subshells only — the *solid-state* moment source (§9).
+
+    In a crystal the s/p valence electrons are quenched (they go into covalent bonds or the
+    metallic electron sea), so a covalent/main-group solid carries no net moment — diamond and
+    NaCl are non-magnetic even though free C and Cl have unpaired p-electrons. The *localized*
+    d/f electrons are not quenched and keep their moment: Fe (3d⁶ → 4) magnetises, Cu (3d⁹ → 1)
+    does not. This is the field :mod:`chemistry.crystal` maps to per-cell ``moment``.
+
+    (The Stoner caveat still stands: a large d-moment predicts ferromagnetic order in this
+    Ising-J>0 substrate, which overpredicts for antiferromagnets like Cr — see chemistry.crystal.)
+    """
+    total = 0
+    for (_n, l, c) in configuration(z - charge):
+        if l < 2:           # skip s (l=0) and p (l=1); count only d (2) and f (3)
+            continue
+        m = 2 * l + 1
+        total += c if c <= m else (2 * m - c)
+    return total
+
+
 def lone_pairs(z: int) -> int:
     """Non-bonding electron pairs on the neutral atom: ``(valence_e − capacity) / 2``.
 
@@ -268,6 +308,11 @@ class Atom:
     @property
     def lone_pairs(self) -> int:
         return lone_pairs(self.z)
+
+    @property
+    def unpaired_electrons(self) -> int:
+        """Unpaired electrons in the neutral atom (the local magnetic moment magnitude)."""
+        return unpaired_electrons(self.z)
 
     @property
     def ion_charge(self) -> int:
