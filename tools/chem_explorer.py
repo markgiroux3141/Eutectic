@@ -25,6 +25,8 @@ Commands grow with the C0..C5 ladder. C0 ships:
 * ``tech-tree``      — (C5) the reaction network as a tech tree: what is reachable from an
                        inventory, how the reachable set GROWS as T crosses genuine ΔG gates (and
                        which unlocks ride the soft rate dial instead), and the locked NO target.
+* ``synthesize``     — (§13) synthesis as a trajectory: a target reachable at NO static T (NO),
+                       made by a heat-then-cool route, and how reversing the order fails.
 
 Reactions are given as ``REACTANTS = PRODUCTS`` with ``+`` separators; each term is a species
 token (see :func:`_parse_species`): an element symbol is its diatomic gas (``H``→H₂); ``A.B`` is
@@ -404,6 +406,52 @@ def _cmd_techtree(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_synthesize(args: argparse.Namespace) -> int:
+    """(spec §13) synthesis as a trajectory: a target reachable at NO static T, made by heat-then-
+    cool -- and the order matters. The chemistry analog of the materials process layer."""
+    from chemistry import network as net
+    from chemistry import synthesis as syn
+    from chemistry import reaction as rx
+    from chemistry.conditions import ChemConditions
+
+    n = net.demo_network()
+    inv = net.demo_inventory()
+    target = rx.binary(*args.target.split(".", 1)) if "." in args.target else rx.atom(args.target)
+    hot, cold = args.hot, args.cold
+
+    print(f"synthesis routes for target {target.formula}  (inventory {[s.formula for s in inv]})")
+    print("=" * 72)
+    routes = [
+        ("static cold  [{:g}]".format(cold), syn.isothermal(cold)),
+        ("static hot   [{:g}]".format(hot), syn.isothermal(hot)),
+        ("heat->quench [{:g},{:g}]".format(hot, cold), syn.heat_quench(hot, cold)),
+        ("cool->heat   [{:g},{:g}]".format(cold, hot),
+         syn.Route((ChemConditions(temperature=cold), ChemConditions(temperature=hot)))),
+    ]
+    print(f"  {'route':24} {'makes ' + target.formula + '?':>12}   products")
+    print("  " + "-" * 64)
+    for label, route in routes:
+        r = syn.synthesize(n, inv, route)
+        made = "YES (st%d)" % r.stage_made(target) if r.made(target) else "no"
+        print(f"  {label:24} {made:>12}   {[k[0] for k in r.products()]}")
+
+    # the genuine gates that make the trajectory necessary
+    diss_N = rx.reaction(((rx.diatomic("N"), 1),), ((rx.atom("N"), 2),))
+    diss_O = rx.reaction(((rx.diatomic("O"), 1),), ((rx.atom("O"), 2),))
+    if args.target == "N.O":
+        rad = rx.reaction(((rx.atom("N"), 1), (rx.atom("O"), 1)), ((rx.binary("N", "O"), 1),))
+        print()
+        print("  why a trajectory is REQUIRED (disjoint genuine-ΔG windows):")
+        print(f"    atomic N exists only above dissociation T*={diss_N.crossover_temperature(ChemConditions()):.2f}")
+        print(f"    atomic O exists only above dissociation T*={diss_O.crossover_temperature(ChemConditions()):.2f}")
+        print(f"    N+O->NO exergonic only below recombination T*={rad.crossover_temperature(ChemConditions()):.2f}")
+        print("    => no single T satisfies both; heat to make radicals, QUENCH to capture NO.")
+    print()
+    print("  NB cumulative attainability (what the route can YIELD), not concentrations: we model")
+    print("  capturing a product at its favourable stage, not back-reaction or partial yield.")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="chem_explorer", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -453,6 +501,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     p_tree.add_argument("--temperature", "-T", type=float, default=5.0, help="temperature (default 5.0)")
     p_tree.add_argument("--catalyst", default=None, help="a catalyst to make present, e.g. Fe")
     p_tree.set_defaults(func=_cmd_techtree)
+
+    p_syn = sub.add_parser("synthesize",
+                           help="(spec 13) synthesis routes: a target reachable at NO static T, made by heat-then-cool")
+    p_syn.add_argument("--target", default="N.O", help="target species (A.B compound or ~atom; default N.O)")
+    p_syn.add_argument("--hot", type=float, default=8.0, help="hot-stage temperature (default 8.0)")
+    p_syn.add_argument("--cold", type=float, default=1.0, help="cold-stage temperature (default 1.0)")
+    p_syn.set_defaults(func=_cmd_synthesize)
 
     args = parser.parse_args(argv)
     return args.func(args)

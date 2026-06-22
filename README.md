@@ -539,6 +539,24 @@ engine measures it"). See `chemistry-engine-spec.md`.
       demo network is gas-phase covalent, so no live/dead decision touches the uncalibrated
       ionic/metallic scale. See `tests/test_network.py`; `python -m tools.chem_explorer tech-tree -T 5`
       and `tech-tree -T 1.8 --catalyst Fe`.
+- [x] **Synthesis as a trajectory** (`chemistry/synthesis.py`, spec §13) — the chemistry analog of
+      the materials **process layer** (`engine/process.py`). Where C5 asks "what's reachable at *one*
+      fixed condition?", a `Route` is an ordered schedule of `ChemConditions` set-points, and
+      `synthesize` threads the **inventory** through them — folding the C5 reachability closure and
+      **accumulating** (a single-stage route reproduces a C5 `reachable` exactly, so it's a strict
+      generalisation). **Keystone proven:** a target reachable at **no static temperature** falls out
+      of a trajectory, because the step that *makes* an intermediate and the step that *consumes* it
+      want different temperatures. `NO` is the case (C5's locked-out target): atomic N exists only
+      above T\*≈7.8, but `N+O→NO` is exergonic only below T\*≈5.4 — disjoint windows. A
+      **heat(8)→quench(1)** route makes it (heat to liberate radicals, quench to capture NO — real
+      radical chemistry: NO forms in combustion/lightning and freezes in on cooling), and **order is
+      load-bearing**: cool-then-heat ends hot and fails. Both gates are *genuine ΔG sign-crossings*
+      (quenching just above the recombination T\* captures nothing; a hot stage below the dissociation
+      T\* liberates no radicals — both pinned). **Honest scope:** this is *cumulative attainability*
+      (what the route can yield, capture-at-the-favourable-stage), not a concentration/yield model —
+      we don't model back-reaction if the product isn't isolated (spec §20: qualitative emergence, not
+      yields); stages are discrete holds (a ramp = more stages). See `tests/test_synthesis.py`;
+      `python -m tools.chem_explorer synthesize`.
 
 ## Running
 
