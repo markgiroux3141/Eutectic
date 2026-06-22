@@ -465,8 +465,30 @@ engine measures it"). See `chemistry-engine-spec.md`.
       fields apply only to new compounds. See `tests/test_crystal_properties.py`; `python -m
       tools.chem_explorer measure-compound Na Cl`. (M7 band-gap revival deferred — needs a 3D
       network substrate.)
-- [ ] **C3 — Reaction thermodynamics** (ΔG feasibility, equilibria, T/P/concentration). Then C4
-      kinetics & catalysts, C5 reaction network / tech tree.
+- [x] **C3 — Reaction thermodynamics** (`chemistry/reaction.py`, `chemistry/conditions.py`).
+      Feasibility *measured* from energetics: **ΔH** by Hess's law over the C1 bond energies
+      (`Σ E(broken) − Σ E(formed)`); **ΔS** from a distilled phase-entropy estimate (gas ≫ liquid >
+      solid, so more gas moles → higher S); **ΔG = ΔH − T·ΔS** with the **mass-action / Le Chatelier**
+      term folded in (`ΔG = ΔG° + R·T·ln Q`, gas activity ∝ P); **K = exp(−ΔG/RT)** (so K=1 at the
+      ΔG=0 boundary). `ChemConditions(T, P, concentration, catalysts)` extends `engine.Conditions`.
+      **Keystone proven:** exergonic reactions proceed at standard T (recombination `2A→A₂`, K>1),
+      endergonic ones don't (`A₂→2A`, K<1) — **until a temperature threshold flips ΔG's sign** at
+      `T*=ΔH/ΔS`, a *genuine* single sign-crossing (ΔG monotone in T, the boolean flips at T*, not a
+      smooth dial); the thresholds **order by bond strength** (Cl₂ 2.58 < H₂ 5.91 < O₂ 8.69 —
+      weaker bond dissociates cooler, emergent and parameter-free); Le Chatelier reproduces — raising
+      P on a gas-producing reaction raises T* (suppresses dissociation), concentration likewise.
+      **The honest C3 finding (de-risked, reported not buried):** Hess's law inherits the C1
+      *cross-bond-calibration* caveat — the bond energy is **linear in bond order**, overstating
+      double/triple bonds, so reactions that *break* a multiple bond read the **wrong ΔH sign**
+      (`2H₂+O₂→2H₂O` comes out +68 endothermic vs reality's strong exotherm; same for Haber and
+      `H₂+Cl₂`). We **do not retune** the bond model to force a pass (the no-fudge norm); the keystone
+      is anchored on the class where the sign is **robust to that calibration** — dissociation/
+      recombination (one bond type) and reactions that only *form* multiple bonds (`C+O₂→CO₂` correctly
+      exothermic). The wrong-sign reactions are pinned as tests, recording the divergence. See
+      `tests/test_thermo.py`; `python -m tools.chem_explorer react "O = 2 ~O" -T 13` and
+      `condition-sweep "Cl = 2 ~Cl"`.
+- [ ] **C4 — Kinetics & catalysts** (Arrhenius rate, Ea, catalysts), then C5 reaction network /
+      tech tree.
 
 ## Running
 

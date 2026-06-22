@@ -15,6 +15,21 @@ Commands grow with the C0..C5 ladder. C0 ships:
                        geometry, and formation energy (spec §16).
 * ``measure-compound`` — the integration view (C2): build a compound's crystal lattice and run
                        the **materials** extractors on it — chemistry in, bulk properties out.
+* ``react``          — (C3) a reaction's ΔH/ΔS/ΔG/K at given conditions, whether it proceeds,
+                       and (for an entropy-favored one) the temperature threshold T* where ΔG
+                       flips sign.
+* ``condition-sweep`` — (C3) ΔG(T) across a temperature range, marking the ΔG=0 crossing; with
+                       ``--pressure`` shows the Le Chatelier shift of that threshold.
+
+Reactions are given as ``REACTANTS = PRODUCTS`` with ``+`` separators; each term is a species
+token (see :func:`_parse_species`): an element symbol is its diatomic gas (``H``→H₂); ``A.B`` is
+the binary compound (``H.O``→H₂O); a leading ``=`` count and trailing ``/phase`` are optional, and
+``~SYM`` is a free atom (``~H``). Examples::
+
+    python -m tools.chem_explorer react "2 H + O = 2 H.O"      # 2H₂ + O₂ -> 2H₂O
+    python -m tools.chem_explorer react "O = 2 ~O" --temperature 9   # O₂ -> 2O (dissociation)
+    python -m tools.chem_explorer condition-sweep "Cl = 2 ~Cl"       # ΔG(T), Cl₂ dissociation
+    python -m tools.chem_explorer condition-sweep "O = 2 ~O" --pressure 10  # Le Chatelier
 
 Usage::
 
@@ -148,6 +163,128 @@ def _cmd_measure(args: argparse.Namespace) -> int:
     return 0
 
 
+def _parse_species(token: str):
+    """Parse one species token into a :class:`chemistry.reaction.Species`.
+
+    Grammar (suffix ``/phase`` optional: gas|liquid|solid, default gas):
+      ``H``       → the element's diatomic gas (H₂)
+      ``H.O``     → the binary compound of two elements (H₂O)
+      ``~O``      → a free monatomic species (atomic O)
+    """
+    from chemistry import reaction as rx
+    from chemistry.conditions import Phase
+
+    phase = Phase.GAS
+    if "/" in token:
+        token, pname = token.split("/", 1)
+        phase = Phase[pname.strip().upper()]
+    token = token.strip()
+    if token.startswith("~"):
+        return rx.atom(token[1:], phase)
+    if "." in token:
+        a, b = token.split(".", 1)
+        return rx.binary(a, b, phase)
+    return rx.diatomic(token, phase)
+
+
+def _parse_reaction(text: str):
+    """Parse ``"2 A + B = 2 C"`` into a :class:`chemistry.reaction.Reaction`."""
+    from chemistry import reaction as rx
+
+    if "=" not in text:
+        raise ValueError("reaction must contain '=' separating reactants from products")
+    lhs, rhs = text.split("=", 1)
+
+    def side(part: str):
+        terms = []
+        for chunk in part.split("+"):
+            chunk = chunk.strip()
+            if not chunk:
+                continue
+            bits = chunk.split(None, 1)
+            if len(bits) == 2 and bits[0].isdigit():
+                coef, tok = int(bits[0]), bits[1]
+            else:
+                coef, tok = 1, chunk
+            terms.append((_parse_species(tok), coef))
+        return tuple(terms)
+
+    return rx.reaction(side(lhs), side(rhs))
+
+
+def _conditions(args):
+    from chemistry.conditions import ChemConditions
+
+    return ChemConditions(
+        temperature=args.temperature,
+        pressure=getattr(args, "pressure", 0.0) or 1.0,
+        concentration=getattr(args, "concentration", 1.0),
+    )
+
+
+def _fmt_side(side) -> str:
+    return " + ".join(f"{c if c != 1 else ''}{sp.formula}".strip() for sp, c in side)
+
+
+def _cmd_react(args: argparse.Namespace) -> int:
+    try:
+        r = _parse_reaction(args.reaction)
+    except (ValueError, KeyError) as exc:
+        print(f"could not parse reaction: {exc}", file=sys.stderr)
+        return 2
+    cond = _conditions(args)
+    print(f"{_fmt_side(r.reactants)}  ->  {_fmt_side(r.products)}")
+    print("=" * 56)
+    print(f"  conditions         T={cond.temperature:g}  P={cond.pressure:g}  c={cond.concentration:g}")
+    print(f"  delta_H            {r.delta_H:+.2f}   ({'exothermic' if r.delta_H < 0 else 'endothermic'})")
+    print(f"  delta_S            {r.delta_S:+.2f}   (Dn_gas={r.delta_n_gas:+d}, Dn_total={r.delta_n_total:+d})")
+    print(f"  delta_G            {r.delta_G(cond):+.2f}   ({'SPONTANEOUS' if r.is_spontaneous(cond) else 'not spontaneous'})")
+    print(f"  K = exp(-dG/RT)    {r.equilibrium_constant(cond):.4g}   ({'products' if r.equilibrium_constant(cond) > 1 else 'reactants'} favored)")
+    t_star = r.crossover_temperature(cond)
+    if t_star is None:
+        print("  crossover T*       none (delta_G does not change sign for T>0)")
+    else:
+        print(f"  crossover T*       {t_star:.3f}   (delta_G flips sign here; heat above to drive it)")
+    print()
+    print("  NB delta_H is Hess's law over the C1 bond energies, which are LINEAR in bond order")
+    print("  (overstating double/triple bonds): reactions that BREAK a multiple bond (e.g.")
+    print("  2H2+O2->2H2O) can read the wrong delta_H sign. Dissociation/recombination is robust.")
+    return 0
+
+
+def _cmd_sweep(args: argparse.Namespace) -> int:
+    try:
+        r = _parse_reaction(args.reaction)
+    except (ValueError, KeyError) as exc:
+        print(f"could not parse reaction: {exc}", file=sys.stderr)
+        return 2
+    from chemistry.conditions import ChemConditions
+
+    p = args.pressure or 1.0
+    c = args.concentration
+    t_star = r.crossover_temperature(ChemConditions(pressure=p, concentration=c))
+    print(f"{_fmt_side(r.reactants)}  ->  {_fmt_side(r.products)}   (P={p:g}, c={c:g})")
+    print("=" * 56)
+    print(f"  delta_H={r.delta_H:+.2f}  delta_S={r.delta_S:+.2f}  ->  ", end="")
+    print("T* = none" if t_star is None else f"T* = {t_star:.3f}")
+    print(f"  {'T':>7} {'delta_G':>12}  spont?")
+    print("  " + "-" * 32)
+    lo, hi, n = args.t_min, args.t_max, args.steps
+    prev_sign = None
+    for i in range(n + 1):
+        t = lo + (hi - lo) * i / n
+        cond = ChemConditions(temperature=t, pressure=p, concentration=c)
+        dg = r.delta_G(cond)
+        spont = "yes" if dg < 0 else " no"
+        mark = ""
+        sign = dg < 0
+        if prev_sign is not None and sign != prev_sign:
+            mark = "  <== delta_G sign-crossing"
+        prev_sign = sign
+        print(f"  {t:>7.2f} {dg:>12.2f}   {spont}{mark}")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="chem_explorer", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -169,6 +306,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     p_meas.add_argument("a", help="element symbol (single -> element crystal)")
     p_meas.add_argument("b", nargs="?", default=None, help="optional second element (binary compound)")
     p_meas.set_defaults(func=_cmd_measure)
+
+    p_react = sub.add_parser("react", help="a reaction's thermodynamics at given conditions")
+    p_react.add_argument("reaction", help='e.g. "2 H + O = 2 H.O"  (H->H2, H.O->H2O, ~O->atom)')
+    p_react.add_argument("--temperature", "-T", type=float, default=1.0, help="temperature (default 1.0)")
+    p_react.add_argument("--pressure", "-P", type=float, default=1.0, help="pressure (default 1.0)")
+    p_react.add_argument("--concentration", "-c", type=float, default=1.0, help="activity (default 1.0)")
+    p_react.set_defaults(func=_cmd_react)
+
+    p_sweep = sub.add_parser("condition-sweep", help="delta_G(T) across a temperature range")
+    p_sweep.add_argument("reaction", help='e.g. "Cl = 2 ~Cl"  (Cl2 dissociation)')
+    p_sweep.add_argument("--t-min", type=float, default=0.5, help="sweep start T (default 0.5)")
+    p_sweep.add_argument("--t-max", type=float, default=12.0, help="sweep end T (default 12.0)")
+    p_sweep.add_argument("--steps", type=int, default=12, help="number of sweep steps (default 12)")
+    p_sweep.add_argument("--pressure", "-P", type=float, default=1.0, help="pressure (Le Chatelier)")
+    p_sweep.add_argument("--concentration", "-c", type=float, default=1.0, help="activity (mass action)")
+    p_sweep.set_defaults(func=_cmd_sweep)
 
     args = parser.parse_args(argv)
     return args.func(args)
