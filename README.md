@@ -418,6 +418,27 @@ M5 made `occupied` thermal and asked melting to *emerge* — pressure-tested the
       layer findings**; `tests/test_machines.py`.
 - [ ] Game shell follows (spec §11 M6 — inventory, crafting UI, building, progression).
 
+### Chemistry layer (chemistry-engine-spec — the layer *below* materials)
+
+A separate ladder (C0..C5) building atoms → bonds → compounds → reactions, whose product
+crystals feed the existing extractors unchanged ("chemistry generates structure; the materials
+engine measures it"). See `chemistry-engine-spec.md`.
+
+- [x] **C0 — Atom model** (`chemistry/atoms.py`). Root atoms carry distilled descriptors;
+      everything else is **derived parameter-free from Z**. **Keystone proven:** valence/bonding
+      capacity from the octet-deficit rule `min(valence_e, octet−valence_e)` over a Madelung-filled
+      configuration reproduces H→1, C→4 (the promotion case, no special-casing), N→3, O→2, Na→+1,
+      Mg→+2, Cl→−1, noble gases→0 — and lone pairs (O→2, N→1) for VSEPR next. **Bonus keystone:** a
+      Slater Z_eff model makes `EN ∝ Z_eff/n²`, `radius ∝ n²/Z_eff` reproduce every periodic trend.
+      Honest caveats (flagged in-module): the derived EN is *ordinal, not Pauling-calibrated* (so
+      C1b reads authored Pauling values); transition-metal valence reads a single common 2 (no
+      d-shell multivalence yet); plain Madelung misses the Cr/Cu half-shell anomalies. See
+      `tests/test_valence.py`; `python -m tools.chem_explorer inspect-atom O`.
+- [ ] **C1 — Bonding & molecules** (geometry/VSEPR, bond character/order/energy, formation by
+      energy minimization). Keystones: geometry, bond type, stoichiometry.
+- [ ] **C2 — Compound → lattice + integration** (the load-bearing risk: derive old affinities from
+      descriptors, keep M0–M8 green). Then C3 thermo, C4 kinetics, C5 reaction network.
+
 ## Running
 
 ```powershell
