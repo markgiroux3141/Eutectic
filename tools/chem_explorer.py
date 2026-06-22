@@ -22,6 +22,9 @@ Commands grow with the C0..C5 ladder. C0 ships:
                        ``--pressure`` shows the Le Chatelier shift of that threshold.
 * ``kinetics``       — (C4) a reaction's Ea and Arrhenius rate(T), the favourable-but-trapped
                        story, and how a ``--catalyst`` lowers the barrier (rate up, ΔG unchanged).
+* ``tech-tree``      — (C5) the reaction network as a tech tree: what is reachable from an
+                       inventory, how the reachable set GROWS as T crosses genuine ΔG gates (and
+                       which unlocks ride the soft rate dial instead), and the locked NO target.
 
 Reactions are given as ``REACTANTS = PRODUCTS`` with ``+`` separators; each term is a species
 token (see :func:`_parse_species`): an element symbol is its diatomic gas (``H``→H₂); ``A.B`` is
@@ -334,6 +337,73 @@ def _cmd_kinetics(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_techtree(args: argparse.Namespace) -> int:
+    """(C5) the reaction network as a tech tree: what is reachable from an inventory, and how the
+    reachable set GROWS as you raise T across genuine ΔG thresholds (or add a catalyst)."""
+    from chemistry import network as net
+    from chemistry import reaction as rx
+    from chemistry.conditions import ChemConditions
+
+    n = net.demo_network()
+    inv = net.demo_inventory()
+    inv_keys = {net.species_key(s) for s in inv}
+    cats = frozenset({args.catalyst}) if args.catalyst else frozenset()
+
+    print("C5 tech tree (curated demo network: all gas-phase covalent, so no live/dead decision")
+    print("touches the uncalibrated ionic/metallic scale).")
+    print("=" * 72)
+    print(f"  inventory   {sorted(f for f, _ in inv_keys)}")
+    print(f"  species     {[s.formula for s in n.species()]}")
+    print(f"  catalyst    {sorted(cats) if cats else '(none)'}")
+
+    # reachability at a single requested T (with provenance)
+    cond = ChemConditions(temperature=args.temperature, catalysts=cats)
+    prod = n.first_producers(inv, cond)
+    print(f"\n  reachable at T={args.temperature:g}{' +'+args.catalyst if args.catalyst else ''}:")
+    for k in sorted(prod):
+        maker = prod[k]
+        if maker is None:
+            print(f"    {k[0]:<5} (inventory)")
+        else:
+            src = " + ".join(f"{c if c != 1 else ''}{sp.formula}".strip()
+                             for sp, c in maker.reaction.reactants)
+            print(f"    {k[0]:<5} <- {src}")
+
+    # the genuine thresholds: radical unlock T == the C3 dissociation crossover, ordered
+    print("\n  GENUINE ΔG gates (pure-ΔG, no rate dial) -- radical unlock T == dissociation T*:")
+    for sym in ("Cl", "O", "H", "N"):
+        atom = rx.atom(sym)
+        onset = n.unlock_temperature(atom, inv, require_rate=False)
+        tstar = rx.reaction(((rx.diatomic(sym), 1),), ((atom, 2),)).crossover_temperature(ChemConditions())
+        print(f"    {sym:<3} unlocks at T={onset:6.3f}   (C3 T*={tstar:6.3f}; weaker bond unlocks cooler)")
+
+    # reachability grows as T rises
+    print("\n  reachability vs T (the tech tree unlocking; --catalyst applies):")
+    print(f"    {'T':>6}  newly-reachable (beyond inventory)")
+    print("    " + "-" * 56)
+    for t in (1.0, 2.0, 3.0, 4.5, 5.0, 6.0, 8.0, 12.0):
+        c = ChemConditions(temperature=t, catalysts=cats)
+        got = n.reachable(inv, c)
+        new = sorted(f for f, _ in got if (f, _) not in inv_keys)
+        print(f"    {t:>6.1f}  {new}")
+
+    # catalyst gate (flagged soft) + locked target (emergent rarity)
+    NH3, NO = rx.binary("N", "H"), rx.binary("N", "O")
+    w = ChemConditions(temperature=1.8)
+    wfe = ChemConditions(temperature=1.8, catalysts=frozenset({"Fe"}))
+    print("\n  catalyst gate (SOFT -- works through the rate dial, flagged):")
+    print(f"    NH3 @T=1.8  reachable without Fe? {n.can_reach(NH3, inv, w)}   "
+          f"with Fe? {n.can_reach(NH3, inv, wfe)}  (ΔG unchanged either way)")
+    print("  emergent rarity (no authored 'rare' tag):")
+    print(f"    NO reachable at ANY T? {n.unlock_temperature(NO, inv, require_rate=False) is not None}"
+          "   (direct route ΔG>0 always; radical window disjoint from atomic N)")
+    print()
+    print("  NB the ΔG gates are genuine sign-crossings (onset pinned at T* regardless of the rate")
+    print("  cutoff); the catalyst/HCl unlocks ride the SOFT rate dial (onset slides as the cutoff")
+    print("  moves) -- we report which is which rather than dressing the dial as a transition.")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="chem_explorer", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -377,6 +447,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     p_kin.add_argument("--temperature", "-T", type=float, default=1.0, help="temperature (default 1.0)")
     p_kin.add_argument("--catalyst", default=None, help="a species that catalyses this reaction, e.g. Pt")
     p_kin.set_defaults(func=_cmd_kinetics)
+
+    p_tree = sub.add_parser("tech-tree",
+                            help="(C5) reachable species from an inventory; how the set grows with T/catalyst")
+    p_tree.add_argument("--temperature", "-T", type=float, default=5.0, help="temperature (default 5.0)")
+    p_tree.add_argument("--catalyst", default=None, help="a catalyst to make present, e.g. Fe")
+    p_tree.set_defaults(func=_cmd_techtree)
 
     args = parser.parse_args(argv)
     return args.func(args)

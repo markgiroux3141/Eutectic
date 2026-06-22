@@ -512,7 +512,33 @@ engine measures it"). See `chemistry-engine-spec.md`.
       (nudging the cutoff slides it smoothly — the disguised-dial tell). Absolute rates are
       uncalibrated; the T-sensitivity and the catalyst's fixed barrier-shift are what's emergent. See
       `tests/test_kinetics.py`; `python -m tools.chem_explorer kinetics "~C + O = C.O" --catalyst Pt`.
-- [ ] **C5 — Reaction network / tech tree** (reachability graph, prerequisites, condition gates).
+- [x] **C5 — Reaction network / tech tree** (`chemistry/network.py`). Species + reactions form a
+      directed graph; `reachable(inventory, conditions)` is its **transitive closure** — fire every
+      *live* reaction (ΔG<0 *and* fast enough at the available T given any catalysts), add products,
+      repeat to a fixed point. Prerequisites, condition-gating, and rarity **emerge from the graph**,
+      not authored progression. **Keystone proven (anchored on the genuine threshold):** from
+      {H₂,O₂,N₂,Cl₂}, the free radicals are unreachable cold and **unlock as T crosses each diatomic's
+      dissociation T\*, in emergent bond-strength order** (Cl 4.03 < O 4.62 < H 7.27 < N 7.79 — the C3
+      ordering, parameter-free); the unlock temperature *equals* the C3 ΔG sign-crossing, and the
+      reachable set grows monotonically (and **sheds** H₂O above its own crossover ~7.55 — correct
+      entropy). **Multi-step prerequisite** (`O₂→2O` then `O+H₂→H₂O`): the target is unreachable below
+      atomic O's gate and only forms after the intermediate is made (overlap window T∈[4.62, 6.09]).
+      **Catalyst gate:** Fe flips NH₃ from unreachable to reachable inside its thermodynamic window
+      (T<2.10), with ΔG identical either way. **Emergent rarity:** `NO` sits in the graph but is
+      reachable at **no** temperature — direct `N₂+O₂→2NO` is endothermic with Δn_gas=0 (ΔG>0 always)
+      and the radical window (<5.4) is disjoint from when atomic N exists (>7.8); a closed
+      thermodynamic window, nothing tagged "rare". **Honest watch-outs (flagged, per no-fudge):**
+      (1) the "fast enough" gate is a **soft rate dial** (`DEFAULT_RATE_CUTOFF`) — so the headline
+      keystone gates on **ΔG only** (`require_rate=False`), and we *prove* the distinction with a
+      disguised-dial test: the ΔG-gated radical onset is **pinned** at T\* as the cutoff is nudged
+      over orders of magnitude, while the rate-gated unlock (HCl, Haber) **slides smoothly** — we
+      report which gate is which rather than dressing the dial as a transition. (2) A *unique*
+      radical-only synthesis to a stable compound generally **doesn't exist** in this substrate
+      (recombination shrinks gas moles, turning endergonic below the dissociation T\* unless the
+      product bond beats the diatomic) — a structural negative, reported. (3) Every reaction in the
+      demo network is gas-phase covalent, so no live/dead decision touches the uncalibrated
+      ionic/metallic scale. See `tests/test_network.py`; `python -m tools.chem_explorer tech-tree -T 5`
+      and `tech-tree -T 1.8 --catalyst Fe`.
 
 ## Running
 
