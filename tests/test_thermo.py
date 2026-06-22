@@ -103,11 +103,14 @@ def test_crossing_is_a_sign_flip_not_a_dial(sym):
 
 
 def test_crossover_ordering_tracks_bond_strength():
-    """Weaker bond ⇒ lower dissociation threshold: Cl₂ < H₂ < O₂ (emergent, parameter-free)."""
+    """Weaker bond ⇒ lower dissociation threshold (emergent, parameter-free). Uses Cl₂<H₂<N₂,
+    which the model orders the same as reality (Cl₂ 242 < H₂ 436 < N₂; real 242<436<945). O₂ is
+    excluded here — its underestimated double bond inverts the order (see the residual-limit
+    test below); the mechanism T*∝ΔH still holds, only O=O's magnitude is wrong."""
     t_cl = _dissociation("Cl").crossover_temperature()
     t_h = _dissociation("H").crossover_temperature()
-    t_o = _dissociation("O").crossover_temperature()
-    assert t_cl < t_h < t_o
+    t_n = _dissociation("N").crossover_temperature()
+    assert t_cl < t_h < t_n
 
 
 # --- exergonic proceeds, endergonic doesn't (at standard conditions) ------------------
@@ -174,39 +177,50 @@ def test_concentration_shifts_a_mole_changing_reaction():
     assert t_lo < t_hi
 
 
-# --- the REPORTED divergence: signs the C1 bond model gets wrong (pinned, not hidden) -
+# --- the C1↔C3 fix: combustion/synthesis signs now come out RIGHT (Pauling recalibration) --
+# These three read ENDOthermic under the original EN_avg/(r) bond model (linear in order, which
+# overstated O=O/N≡N). After the Pauling recalibration of chemistry/bonding.py — calibrated to
+# independent single-bond data, NOT to these reactions — their ΔH signs are correct as a
+# consequence. (History: see the c1-bond-order-fix-needed work and chemistry/bonding.py.)
 
-@pytest.mark.parametrize("name,react,prod", [
-    # these are exothermic in reality, but the C1 linear-in-order energy overstates the
-    # O=O / N≡N / (the bond broken), so Hess's law reads them ENDOthermic. Recorded.
-    ("2H2+O2->2H2O", (("H", "H", 2), ("O", "O", 1)), (("H", "O", 2),)),
-    ("N2+3H2->2NH3", (("N", "N", 1), ("H", "H", 3)), (("H", "N", 2),)),
-    ("H2+Cl2->2HCl", (("H", "H", 1), ("Cl", "Cl", 1)), (("H", "Cl", 2),)),
+@pytest.mark.parametrize("name,react,prod,real_kJ", [
+    ("2H2+O2->2H2O", (("H", "H", 2), ("O", "O", 1)), (("H", "O", 2),), -482),
+    ("N2+3H2->2NH3", (("N", "N", 1), ("H", "H", 3)), (("H", "N", 2),), -92),
+    ("H2+Cl2->2HCl", (("H", "H", 1), ("Cl", "Cl", 1)), (("H", "Cl", 2),), -185),
 ])
-def test_known_exothermic_reactions_read_endothermic_in_model(name, react, prod):
-    """DOCUMENTED LIMITATION (spec §20): bond-breaking of multiple bonds flips the ΔH sign."""
+def test_combustion_and_synthesis_are_correctly_exothermic(name, react, prod, real_kJ):
+    """The headline C3 fix: known-exothermic reactions now read exothermic (ΔH<0)."""
     r = rx.reaction(
         tuple((rx.binary(a, b), c) for a, b, c in react),
         tuple((rx.binary(a, b), c) for a, b, c in prod),
     )
-    assert r.delta_H > 0.0  # model says endothermic — the recorded divergence from reality
+    assert real_kJ < 0          # (sanity: reality is exothermic)
+    assert r.delta_H < 0.0      # and now so is the model — the sign is right
 
 
-@pytest.mark.parametrize("name,react,prod", [
-    # no multiple bond is *broken* here, so the overcount can't flip the sign: model agrees.
-    ("C+O2->CO2", ((rx.atom, "C", 1), (rx.diatomic, "O", 1)), ((rx.binary, ("C", "O"), 1),)),
-])
-def test_reactions_that_only_form_multiple_bonds_are_correctly_exothermic(name, react, prod):
-    """Where the sign is robust, the model gets it right (C+O₂→CO₂ exothermic)."""
-    def build(side):
-        out = []
-        for fn, arg, c in side:
-            sp = fn(*arg) if isinstance(arg, tuple) else fn(arg)
-            out.append((sp, c))
-        return tuple(out)
+def test_water_formation_enthalpy_is_in_the_right_ballpark():
+    """2H₂+O₂→2H₂O lands near the real −482 kJ/mol — magnitude, not just sign (a real scale now)."""
+    r = rx.reaction(((rx.diatomic("H"), 2), (rx.diatomic("O"), 1)), ((rx.binary("H", "O"), 2),))
+    assert r.delta_H == pytest.approx(-482, abs=120)   # ≈ −453 in the model
 
-    r = rx.reaction(build(react), build(prod))
+
+def test_reactions_that_only_form_multiple_bonds_are_exothermic():
+    """C+O₂→CO₂ is exergonic (was correct before the fix too; still is)."""
+    r = rx.reaction(((rx.atom("C"), 1), (rx.diatomic("O"), 1)), ((rx.binary("C", "O"), 1),))
     assert r.delta_H < 0.0
+
+
+# --- the RESIDUAL honest limitation, pinned as a test (not hidden) --------------------
+
+def test_oxygen_double_bond_dissociation_is_underestimated():
+    """DOCUMENTED LIMIT: O=O is built from the anomalously WEAK O–O single × the order factor,
+    so the model's O₂ dissociation energy (~277) is far below real (498) and even below H₂'s
+    (436) — inverting the real Cl₂<H₂<O₂ bond-strength order for O₂. The reaction *signs* stay
+    right; only O/N multiple-bond magnitudes are off. (Same root cause for N≡N.)"""
+    o2 = _dissociation("O").delta_H
+    h2 = _dissociation("H").delta_H
+    assert o2 < h2                       # model inverts reality (real: O₂ 498 > H₂ 436)
+    assert o2 == pytest.approx(277, abs=20)
 
 
 # --- determinism + identity (spec §14) ------------------------------------------------

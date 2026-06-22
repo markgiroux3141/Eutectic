@@ -10,16 +10,30 @@ proxy — the C0 de-risk showed the proxy is trend-correct but not Pauling-calib
 quantitative ΔEN thresholds below would be wrong on the proxy scale (see
 :mod:`chemistry.atoms`). Trends were the proxy's job; absolute ΔEN is the authored value's.
 
-**Honest scope at C1 (flagged, carried to C2):** the ionic energy here is the single ion-pair
-Coulomb term ``z⁺z⁻/(r⁺+r⁻)``. The large "ionic-strong" *lattice* energy is the Madelung sum
-over the crystal — a C2 deliverable. So covalent and ionic energies are on **separate, not yet
-cross-calibrated scales**; C1 claims only *within-character* ordering (e.g. triple > double >
-single), never "ionic vs covalent" magnitude comparison.
+**Covalent energy recalibration (post-C4, the C3↔C1 fix).** The covalent bond energy is the
+**Pauling model** in real kJ/mol — ``√(E_AA·E_BB) + k·(Δχ)²`` times a sublinear bond-order
+factor (see :func:`covalent_bond_energy`). It replaced the original ``order·EN_avg/(r)`` form
+after a de-risk showed that form correlated only **r≈0.32** with real single-bond energies and
+was linear in bond order, which flipped the ΔH sign of every combustion/synthesis reaction in
+C3 (2H₂+O₂ read endothermic). The replacement was the *honest* fix the no-fudge norm demanded:
+homonuclear single-bond energies are authored real reference data, the ionic constant (96.5)
+and bond-order α (~0.9) are calibrated from **independent** bond data, held-out heteronuclear
+bonds are then predicted at **r≈0.97**, and the correct combustion signs fall out as a
+*consequence* — never fitted to a reaction target. (A bond-order-only patch was rejected: at the
+honest α≈0.9, combustion stayed endothermic — the form, not the order, was the real culprit.)
+
+**Honest scope still carried:** (1) O=O / N≡N are built from the *anomalously weak* O–O / N–N
+single bonds × the order factor, so multiple bonds on O/N are **underestimated** (magnitudes
+off, signs right). (2) the **ionic** energy here is the single ion-pair Coulomb term
+``z⁺z⁻/(r⁺+r⁻)`` and **metallic** its own electron-sea term; neither is cross-calibrated to the
+covalent kJ/mol scale (the Madelung lattice energy is still future work). So only the *covalent*
+channel is now on a real scale; cross-character magnitude comparison remains out of scope.
 """
 
 from __future__ import annotations
 
 import enum
+import math
 from dataclasses import dataclass
 
 from .atoms import Atom
@@ -34,11 +48,34 @@ POLAR_DELTA_EN: float = 0.4          # ΔEN in [this, IONIC) -> polar covalent
 METALLIC_EN_CEILING: float = 2.0
 
 # --- energy calibration constants (spec §7: "a fixed scale, not a per-bond dial") ------
-# Each character has ONE proportionality constant. They are NOT mutually calibrated at C1
-# (see module docstring) — cross-character magnitude comparison waits for C2's Madelung.
-COVALENT_K: float = 100.0
+# Ionic / metallic each keep ONE proportionality constant; they are NOT cross-calibrated to
+# the covalent kJ/mol scale (cross-character magnitude comparison still waits for a Madelung
+# treatment — see module docstring). The covalent energy is now the Pauling model (below).
 IONIC_K: float = 100.0
 METALLIC_K: float = 100.0
+
+# --- covalent bond energy: the Pauling model (real kJ/mol) ----------------------------
+# Authored homonuclear single-bond energies (kJ/mol) — distilled REAL reference data, exactly
+# as ``atomic_mass`` is. The Pauling bond-energy equation builds every heteronuclear single
+# bond from these plus an ionic-resonance term, predicting held-out real bonds at r≈0.97 (vs
+# r≈0.32 for the old EN_avg/(r) form — see the recalibration note in the module docstring).
+# Defined for the covalent-forming elements; metals fall back to a coarse radius estimate
+# (flagged in :func:`_homonuclear_energy`) since their real bonding is metallic/ionic.
+HOMONUCLEAR_SINGLE_BOND_ENERGY: dict[str, float] = {
+    "H": 436.0, "B": 293.0, "C": 346.0, "N": 167.0, "O": 146.0, "F": 155.0,
+    "Si": 222.0, "P": 201.0, "S": 266.0, "Cl": 242.0, "Br": 193.0, "I": 151.0,
+}
+# Pauling's ionic-resonance constant (kJ/mol): the extra stabilisation a polar bond gains,
+# ``k·(Δχ)²``. A published physical constant, not a tuned dial.
+IONIC_RESONANCE_K: float = 96.5
+# Each bond beyond the first adds ~α× the first bond's energy (the π bonds are weaker than the
+# σ). α≈0.9 is the mean of the clean σ/π ratios in real C–C/C=C/C≡C, C–N…, C–O… series
+# (range 0.71–1.09) — calibrated from INDEPENDENT bond data, never from a reaction target.
+BOND_ORDER_ALPHA: float = 0.9
+# Coarse fallback E(A–A) ≈ scale / covalent_radius for elements with no authored homonuclear
+# value (only un-tabulated metals, reached only via the rare polar metal+nonmetal path; never
+# a keystone). Tuned once to the order of the authored set, flagged as approximate.
+_FALLBACK_HOMONUCLEAR_SCALE: float = 250.0
 
 
 class BondCharacter(enum.Enum):
@@ -83,21 +120,43 @@ def bond_character(a: Atom, b: Atom) -> BondCharacter | None:
 
 # --- bond energy by character (distilled; MEASURED, not assigned) ---------------------
 
-def covalent_bond_energy(a: Atom, b: Atom, order: int) -> float:
-    """Orbital-overlap model: ``K · order · EN_avg / (r_a + r_b)`` (spec §7).
+def _homonuclear_energy(a: Atom) -> float:
+    """Authored E(A–A) single-bond energy (kJ/mol), or a coarse radius fallback (flagged).
 
-    Closer, higher-order, more-electronegative pairs bond harder. Positive = bond strength.
-
-    KNOWN LIMITATION (revisit — see memory ``c1-bond-order-fix-needed``): this is **linear in
-    ``order``**, so it overstates double/triple bonds (real π bonds are weaker than the σ). The
-    ordering triple>double>single is right, but the *magnitudes* aren't — and C3's Hess's-law ΔH
-    inherits this, flipping the sign of reactions that break a multiple bond (2H₂+O₂→2H₂O reads
-    endothermic). The principled fix is a sublinear-in-order form (``E_single·(1+α(n−1))``);
-    deliberately deferred so it can be validated against C1's own keystones, not slipped in to
-    pass C3 (the no-fudge norm).
+    The fallback (``scale / covalent_radius``) is only reached for un-tabulated elements —
+    in practice metals, and only via the rare polar metal+nonmetal covalent path; no keystone
+    uses it. Their real bonding is metallic/ionic (their own energy functions).
     """
-    en_avg = (a.electronegativity + b.electronegativity) / 2.0  # type: ignore[operator]
-    return COVALENT_K * order * en_avg / (a.covalent_radius + b.covalent_radius)
+    e = HOMONUCLEAR_SINGLE_BOND_ENERGY.get(a.symbol)
+    if e is not None:
+        return e
+    return _FALLBACK_HOMONUCLEAR_SCALE / a.covalent_radius
+
+
+def covalent_bond_energy(a: Atom, b: Atom, order: int) -> float:
+    """Pauling bond-energy model (real kJ/mol): ``√(E_AA·E_BB) + k·(Δχ)²``, × a bond-order factor.
+
+    The geometric mean of the two homonuclear single-bond energies (the covalent contribution)
+    plus an ionic-resonance term that grows with the electronegativity difference — Pauling's
+    classic equation. The bond-order factor ``(1 + α·(order−1))`` makes each additional (π) bond
+    weaker than the first (σ). Positive = bond strength.
+
+    This *replaces* the old ``order·EN_avg/(r)`` form, which correlated only r≈0.32 with real
+    single-bond energies (it over-rewarded high-EN/small-radius pairs like F–F/O–O and was
+    linear in order). The Pauling form predicts held-out heteronuclear bonds at r≈0.97 (MAE
+    ~27 kJ/mol) and — as a *consequence*, not a fit — gives the correct sign for combustion/
+    synthesis enthalpies (2H₂+O₂ ≈ −453 kJ/mol vs real −482), which C3 previously got wrong.
+
+    **Residual honest limits (carried):** O=O and N≡N are built from the *anomalously weak*
+    O–O / N–N single bonds × the order factor, so multiple bonds on O/N are **underestimated**
+    (magnitudes off — e.g. O₂ dissociation ~277 vs real 498 — though the reaction *signs* stay
+    right). And ionic/metallic energies remain on their own (uncalibrated) scales: only the
+    covalent channel is now real kJ/mol.
+    """
+    base = math.sqrt(_homonuclear_energy(a) * _homonuclear_energy(b))
+    if a.electronegativity is not None and b.electronegativity is not None:
+        base += IONIC_RESONANCE_K * (a.electronegativity - b.electronegativity) ** 2
+    return base * (1 + BOND_ORDER_ALPHA * (order - 1))
 
 
 def ionic_bond_energy(cation: Atom, anion: Atom, q_cation: int, q_anion: int) -> float:

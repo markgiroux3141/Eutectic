@@ -442,12 +442,16 @@ engine measures it"). See `chemistry-engine-spec.md`.
       2.5°/lone-pair constant); bond type — NaCl ionic, Cl₂ covalent, Cu metallic, with
       triple>double>single energy ordering; stoichiometry — NaCl 1:1, MgCl₂ 1:2, H₂O 2:1, CO₂ 1:2,
       Al₂O₃ 2:3 *fall out* parameter-free, and the satisfied ratio is the genuine energy minimum
-      (tested, not asserted); noble gases refuse. Honest caveats (in-module): ionic energy is the
-      single ion-pair Coulomb term — the "ionic-strong" lattice (Madelung) energy is C2, so
-      ionic/covalent magnitudes aren't cross-calibrated yet; covalent formation is single-central
-      (multi-center molecules like C₂H₆ need the general search, spec §19.2). See
-      `tests/test_{geometry,bond_type,stoichiometry}.py`; `python -m tools.chem_explorer
-      build-molecule H O`.
+      (tested, not asserted); noble gases refuse. **Covalent energy = the Pauling model** (real
+      kJ/mol): `√(E_AA·E_BB) + k·(Δχ)²` × a sublinear bond-order factor, recalibrated after C4 to
+      fix the C3 enthalpy signs (see below) — it predicts held-out heteronuclear bonds at r≈0.97
+      (the old `EN_avg/(r)` form managed r≈0.32). Honest caveats (in-module): O=O/N≡N are built on
+      the anomalously-weak O–O/N–N singles so multiple-bond magnitudes on O/N are underestimated
+      (signs hold); ionic energy is the single ion-pair Coulomb term and metallic its own — neither
+      is cross-calibrated to the covalent kJ/mol scale (Madelung lattice energy is future work);
+      covalent formation is single-central (multi-center molecules like C₂H₆ need the general
+      search, spec §19.2). See `tests/test_{geometry,bond_type,stoichiometry}.py`; `python -m
+      tools.chem_explorer build-molecule H O`.
 - [x] **C2 — Compound → lattice + integration** (`chemistry/crystal.py`). The bridge: a compound's
       crystal is an `engine.lattice.Lattice` whose **per-cell fields are set by the bonding**, so
       the *existing* extractors measure it **unchanged**. Packing from bond character (ionic
@@ -474,18 +478,22 @@ engine measures it"). See `chemistry-engine-spec.md`.
       **Keystone proven:** exergonic reactions proceed at standard T (recombination `2A→A₂`, K>1),
       endergonic ones don't (`A₂→2A`, K<1) — **until a temperature threshold flips ΔG's sign** at
       `T*=ΔH/ΔS`, a *genuine* single sign-crossing (ΔG monotone in T, the boolean flips at T*, not a
-      smooth dial); the thresholds **order by bond strength** (Cl₂ 2.58 < H₂ 5.91 < O₂ 8.69 —
-      weaker bond dissociates cooler, emergent and parameter-free); Le Chatelier reproduces — raising
-      P on a gas-producing reaction raises T* (suppresses dissociation), concentration likewise.
-      **The honest C3 finding (de-risked, reported not buried):** Hess's law inherits the C1
-      *cross-bond-calibration* caveat — the bond energy is **linear in bond order**, overstating
-      double/triple bonds, so reactions that *break* a multiple bond read the **wrong ΔH sign**
-      (`2H₂+O₂→2H₂O` comes out +68 endothermic vs reality's strong exotherm; same for Haber and
-      `H₂+Cl₂`). We **do not retune** the bond model to force a pass (the no-fudge norm); the keystone
-      is anchored on the class where the sign is **robust to that calibration** — dissociation/
-      recombination (one bond type) and reactions that only *form* multiple bonds (`C+O₂→CO₂` correctly
-      exothermic). The wrong-sign reactions are pinned as tests, recording the divergence. See
-      `tests/test_thermo.py`; `python -m tools.chem_explorer react "O = 2 ~O" -T 13` and
+      smooth dial); the thresholds **order by bond strength** (weaker bond dissociates cooler,
+      emergent and parameter-free); Le Chatelier reproduces — raising P on a gas-producing reaction
+      raises T* (suppresses dissociation), concentration likewise.
+      **The C3↔C1 fix (the honest story, start to finish):** originally Hess's law over the C1
+      `order·EN_avg/(r)` bond energy gave the **wrong ΔH sign** for every reaction that *breaks* a
+      multiple bond (`2H₂+O₂→2H₂O` read +68 endothermic; Haber, `H₂+Cl₂` likewise). We refused to
+      tune a bond-order knob to force a pass; a de-risk then showed the real culprit wasn't the bond
+      order at all but the **functional form** (it tracked real single-bond energies at only r≈0.32).
+      The honest fix was to replace it with the **Pauling model** (`chemistry/bonding.py`),
+      *calibrated from independent single-bond data* (homonuclear energies + the published ionic
+      constant + a σ/π ratio from clean C-series) — **never fitted to a reaction**. Held-out
+      heteronuclear bonds then predict at r≈0.97, and the correct combustion/synthesis signs fall out
+      as a **consequence** (`2H₂+O₂` now −453 kJ/mol vs real −482, spontaneous, K~1e20). Residual
+      honest limit, pinned as a test: O=O/N≡N are still underestimated (anomalously-weak O–O/N–N
+      singles), so the model now *under*-orders O₂ dissociation — magnitudes off on O/N multiple
+      bonds, signs right. See `tests/test_thermo.py`; `python -m tools.chem_explorer react "O = 2 ~O" -T 13` and
       `condition-sweep "Cl = 2 ~Cl"`.
 - [x] **C4 — Kinetics & catalysts** (`chemistry/kinetics.py`). Feasibility (ΔG) says a reaction
       *can* go; **rate** says whether it does. **Arrhenius rate** `A·exp(−Ea/RT)` (the same

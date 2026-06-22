@@ -35,8 +35,9 @@ on the class where the sign is **robust to that calibration**:
 The wrong-sign reactions are **pinned as tests** (recording the divergence, not hiding it).
 
 **Units & what is / isn't calibrated.** Energies are in C1 model units; entropy in model
-entropy units (the ``S_*`` constants below — one global set, like ``COVALENT_K``, not per-
-reaction dials). So *absolute* T magnitudes of the ΔG=0 crossings are **uncalibrated**. What is
+entropy units (the ``S_*`` constants below — one global set, like the bonding model's
+constants, not per-reaction dials). So *absolute* T magnitudes of the ΔG=0 crossings are
+**uncalibrated**. What is
 emergent and parameter-free: the *existence* of a finite positive crossing for entropy-favored
 endothermic reactions, the **ordering** of those crossings (weaker bond ⇒ lower threshold:
 Cl₂ < H₂ < O₂ in the de-risk), and the **direction** of every Le Chatelier shift.

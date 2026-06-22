@@ -51,14 +51,14 @@ def test_activation_energy_scales_with_reactant_bonds():
 def test_favourable_but_trapped_then_ignited_by_heat():
     """Exergonic cold AND hot (within its favourable window), yet negligibly slow cold.
 
-    NB this reaction reduces gas moles (Δn_gas=−1), so above the C3 crossover (~5.4) it turns
+    NB this reaction reduces gas moles (Δn_gas=−1), so above the C3 crossover (~14.4) it turns
     endergonic — correct entropy behaviour. 'Ignition' here means heating into the still-
     favourable regime where the rate has climbed by orders of magnitude.
     """
     r = _combustion()
     k = kin.kinetics(r)
-    cold = ChemConditions(temperature=1.0)
-    hot = ChemConditions(temperature=4.0)
+    cold = ChemConditions(temperature=0.5)
+    hot = ChemConditions(temperature=8.0)
     assert r.is_spontaneous(cold) and r.is_spontaneous(hot)   # favourable at both
     assert k.rate(cold) < 1e-4                                 # trapped: effectively does not go
     assert k.rate(hot) > 1.0                                   # ignited: now it runs

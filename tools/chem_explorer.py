@@ -248,9 +248,10 @@ def _cmd_react(args: argparse.Namespace) -> int:
     else:
         print(f"  crossover T*       {t_star:.3f}   (delta_G flips sign here; heat above to drive it)")
     print()
-    print("  NB delta_H is Hess's law over the C1 bond energies, which are LINEAR in bond order")
-    print("  (overstating double/triple bonds): reactions that BREAK a multiple bond (e.g.")
-    print("  2H2+O2->2H2O) can read the wrong delta_H sign. Dissociation/recombination is robust.")
+    print("  NB delta_H is Hess's law over the Pauling covalent bond energies (real kJ/mol):")
+    print("  combustion/synthesis signs are now correct (2H2+O2 ~ -453 vs real -482). Residual")
+    print("  limit: O=O / N#N are underestimated (built on anomalously-weak O-O/N-N singles), so")
+    print("  multiple-bond MAGNITUDES on O/N are off though signs hold; ionic/metallic uncalibrated.")
     return 0
 
 
