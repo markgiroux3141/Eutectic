@@ -87,6 +87,14 @@ def covalent_bond_energy(a: Atom, b: Atom, order: int) -> float:
     """Orbital-overlap model: ``K · order · EN_avg / (r_a + r_b)`` (spec §7).
 
     Closer, higher-order, more-electronegative pairs bond harder. Positive = bond strength.
+
+    KNOWN LIMITATION (revisit — see memory ``c1-bond-order-fix-needed``): this is **linear in
+    ``order``**, so it overstates double/triple bonds (real π bonds are weaker than the σ). The
+    ordering triple>double>single is right, but the *magnitudes* aren't — and C3's Hess's-law ΔH
+    inherits this, flipping the sign of reactions that break a multiple bond (2H₂+O₂→2H₂O reads
+    endothermic). The principled fix is a sublinear-in-order form (``E_single·(1+α(n−1))``);
+    deliberately deferred so it can be validated against C1's own keystones, not slipped in to
+    pass C3 (the no-fudge norm).
     """
     en_avg = (a.electronegativity + b.electronegativity) / 2.0  # type: ignore[operator]
     return COVALENT_K * order * en_avg / (a.covalent_radius + b.covalent_radius)

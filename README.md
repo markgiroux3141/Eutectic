@@ -487,8 +487,24 @@ engine measures it"). See `chemistry-engine-spec.md`.
       exothermic). The wrong-sign reactions are pinned as tests, recording the divergence. See
       `tests/test_thermo.py`; `python -m tools.chem_explorer react "O = 2 ~O" -T 13` and
       `condition-sweep "Cl = 2 ~Cl"`.
-- [ ] **C4 — Kinetics & catalysts** (Arrhenius rate, Ea, catalysts), then C5 reaction network /
-      tech tree.
+- [x] **C4 — Kinetics & catalysts** (`chemistry/kinetics.py`). Feasibility (ΔG) says a reaction
+      *can* go; **rate** says whether it does. **Arrhenius rate** `A·exp(−Ea/RT)` (the same
+      Boltzmann/exponential form as Metropolis acceptance); **activation energy Ea** from a
+      transition-state estimate — a fixed fraction of the energy of the **reactant** bonds that must
+      break (so radical recombination `2A→A₂`, with no bonds to break, is barrierless, as in
+      reality); **catalysts** open a lower-barrier path (rate only, never ΔG/K, not consumed).
+      **Keystone proven:** the favourable-but-trapped case — C+O₂→CO₂ is exergonic (ΔG<0) yet its
+      rate is negligible cold (1e-8) and climbs ~8 orders of magnitude when heated (trapped → ignited);
+      a catalyst halving Ea gives a ~500× rate boost and **halves** the temperature needed for a given
+      rate, with **ΔG identical** with/without it. (H₂+O₂ can't serve as the trapped example here — its
+      ΔG sign is wrong in our model, the C3 finding — so the keystone uses C+O₂→CO₂.) **Honest caveats
+      (flagged):** the "ignition threshold" is **not a real transition** — rate(T) is a smooth
+      exponential; real ignition is *thermal runaway* (feedback) we don't model, so we report rate
+      ratios / temperature-for-a-rate and refuse to dress a rate>cutoff boolean as a phase transition
+      (nudging the cutoff slides it smoothly — the disguised-dial tell). Absolute rates are
+      uncalibrated; the T-sensitivity and the catalyst's fixed barrier-shift are what's emergent. See
+      `tests/test_kinetics.py`; `python -m tools.chem_explorer kinetics "~C + O = C.O" --catalyst Pt`.
+- [ ] **C5 — Reaction network / tech tree** (reachability graph, prerequisites, condition gates).
 
 ## Running
 

@@ -20,6 +20,8 @@ Commands grow with the C0..C5 ladder. C0 ships:
                        flips sign.
 * ``condition-sweep`` — (C3) ΔG(T) across a temperature range, marking the ΔG=0 crossing; with
                        ``--pressure`` shows the Le Chatelier shift of that threshold.
+* ``kinetics``       — (C4) a reaction's Ea and Arrhenius rate(T), the favourable-but-trapped
+                       story, and how a ``--catalyst`` lowers the barrier (rate up, ΔG unchanged).
 
 Reactions are given as ``REACTANTS = PRODUCTS`` with ``+`` separators; each term is a species
 token (see :func:`_parse_species`): an element symbol is its diatomic gas (``H``→H₂); ``A.B`` is
@@ -285,6 +287,52 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_kinetics(args: argparse.Namespace) -> int:
+    try:
+        r = _parse_reaction(args.reaction)
+    except (ValueError, KeyError) as exc:
+        print(f"could not parse reaction: {exc}", file=sys.stderr)
+        return 2
+    from chemistry import kinetics as kin
+    from chemistry.conditions import ChemConditions
+
+    cat = {args.catalyst} if args.catalyst else set()
+    k = kin.kinetics(r, cat)
+    base = ChemConditions(temperature=args.temperature)
+    print(f"{_fmt_side(r.reactants)}  ->  {_fmt_side(r.products)}")
+    print("=" * 56)
+    print(f"  reactant_bond_energy   {k.reactant_bond_energy:.2f}  (the bonds that must break)")
+    print(f"  Ea (uncatalyzed)       {k.base_activation_energy():.2f}")
+    dg = r.delta_G(base)
+    print(f"  delta_G @ T={args.temperature:g}          {dg:+.2f}  "
+          f"({'favorable' if dg < 0 else 'unfavorable'} -- rate gates it regardless)")
+    print()
+    print(f"  {'T':>7} {'rate':>13} {'spont?':>8}")
+    print("  " + "-" * 32)
+    for t in (1.0, 2.0, 4.0, 8.0, 16.0):
+        c = ChemConditions(temperature=t)
+        spont = "yes" if r.is_spontaneous(c) else " no"
+        print(f"  {t:>7.2f} {k.rate(c):>13.3e} {spont:>8}")
+    if args.catalyst:
+        print()
+        plain = ChemConditions(temperature=args.temperature)
+        with_cat = ChemConditions(temperature=args.temperature, catalysts=frozenset(cat))
+        print(f"  catalyst {args.catalyst!r}: Ea {k.activation_energy(plain):.2f} -> "
+              f"{k.activation_energy(with_cat):.2f}; rate "
+              f"{k.rate(plain):.3e} -> {k.rate(with_cat):.3e} "
+              f"({k.rate(with_cat) / max(k.rate(plain), 1e-300):.1f}x); "
+              f"delta_G {r.delta_G(plain):+.2f} (UNCHANGED)")
+        target = 1.0
+        t0 = k.temperature_for_rate(target, plain)
+        t1 = k.temperature_for_rate(target, with_cat)
+        print(f"  temperature for rate>{target:g}:  {t0:.3f} -> {t1:.3f}  (catalyst lowers the threshold)")
+    print()
+    print("  NB rate(T) is a SMOOTH exponential, not a sharp transition: real ignition is thermal")
+    print("  runaway (feedback) we do not model. Absolute rate is uncalibrated; the T-sensitivity")
+    print("  and the catalyst's fixed barrier-shift are what's emergent.")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="chem_explorer", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -322,6 +370,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     p_sweep.add_argument("--pressure", "-P", type=float, default=1.0, help="pressure (Le Chatelier)")
     p_sweep.add_argument("--concentration", "-c", type=float, default=1.0, help="activity (mass action)")
     p_sweep.set_defaults(func=_cmd_sweep)
+
+    p_kin = sub.add_parser("kinetics", help="Arrhenius rate, Ea, and catalyst effect")
+    p_kin.add_argument("reaction", help='e.g. "C + O = C.O"  (C+O2->CO2, exergonic + trapped)')
+    p_kin.add_argument("--temperature", "-T", type=float, default=1.0, help="temperature (default 1.0)")
+    p_kin.add_argument("--catalyst", default=None, help="a species that catalyses this reaction, e.g. Pt")
+    p_kin.set_defaults(func=_cmd_kinetics)
 
     args = parser.parse_args(argv)
     return args.func(args)
