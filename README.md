@@ -434,8 +434,20 @@ engine measures it"). See `chemistry-engine-spec.md`.
       C1b reads authored Pauling values); transition-metal valence reads a single common 2 (no
       d-shell multivalence yet); plain Madelung misses the Cr/Cu half-shell anomalies. See
       `tests/test_valence.py`; `python -m tools.chem_explorer inspect-atom O`.
-- [ ] **C1 — Bonding & molecules** (geometry/VSEPR, bond character/order/energy, formation by
-      energy minimization). Keystones: geometry, bond type, stoichiometry.
+- [x] **C1 — Bonding & molecules** (`chemistry/bonding.py`, `chemistry/orbitals.py`,
+      `chemistry/molecule.py`). **(a) geometry** from steric number + lone pairs; **(b) bond
+      character** (ΔEN thresholds + a metallic ceiling), order, and a distilled energy; **(c)
+      formation** = minimum-energy bonding over candidate ratios. **Keystones proven:** geometry —
+      CH₄ 109.5° sp³, H₂O bent 104.5°, CO₂ linear 180°, NH₃ pyramidal 107° (one shared
+      2.5°/lone-pair constant); bond type — NaCl ionic, Cl₂ covalent, Cu metallic, with
+      triple>double>single energy ordering; stoichiometry — NaCl 1:1, MgCl₂ 1:2, H₂O 2:1, CO₂ 1:2,
+      Al₂O₃ 2:3 *fall out* parameter-free, and the satisfied ratio is the genuine energy minimum
+      (tested, not asserted); noble gases refuse. Honest caveats (in-module): ionic energy is the
+      single ion-pair Coulomb term — the "ionic-strong" lattice (Madelung) energy is C2, so
+      ionic/covalent magnitudes aren't cross-calibrated yet; covalent formation is single-central
+      (multi-center molecules like C₂H₆ need the general search, spec §19.2). See
+      `tests/test_{geometry,bond_type,stoichiometry}.py`; `python -m tools.chem_explorer
+      build-molecule H O`.
 - [ ] **C2 — Compound → lattice + integration** (the load-bearing risk: derive old affinities from
       descriptors, keep M0–M8 green). Then C3 thermo, C4 kinetics, C5 reaction network.
 

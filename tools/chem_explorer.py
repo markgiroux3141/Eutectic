@@ -6,16 +6,20 @@ descriptors?" — this tool is how we see it before trusting it.
 
 Commands grow with the C0..C5 ladder. C0 ships:
 
-* ``list``          — the root-atom table (authored descriptors at a glance).
-* ``inspect-atom``  — one atom's descriptors + everything derived parameter-free from Z
-                      (configuration, valence, capacity, lone pairs, ion charge, orbitals,
-                      and the Z_eff-derived EN/radius trend proxies).
+* ``list``           — the root-atom table (authored descriptors at a glance).
+* ``inspect-atom``   — one atom's descriptors + everything derived parameter-free from Z
+                       (configuration, valence, capacity, lone pairs, ion charge, orbitals,
+                       and the Z_eff-derived EN/radius trend proxies).
+* ``build-molecule`` — form the minimum-energy compound of two elements: the settled bonding
+                       graph, stoichiometry/formula, bond characters/orders/energies, VSEPR
+                       geometry, and formation energy (spec §16).
 
 Usage::
 
     python -m tools.chem_explorer list
     python -m tools.chem_explorer inspect-atom O
-    python -m tools.chem_explorer inspect-atom Cl
+    python -m tools.chem_explorer build-molecule H O
+    python -m tools.chem_explorer build-molecule Na Cl
 """
 
 from __future__ import annotations
@@ -24,7 +28,8 @@ import argparse
 import sys
 from typing import Sequence
 
-from chemistry import atoms
+from chemistry import atoms, molecule
+from chemistry.molecule import Molecule
 
 
 def _cmd_list(_args: argparse.Namespace) -> int:
@@ -74,6 +79,37 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_build(args: argparse.Namespace) -> int:
+    result = molecule.form_binary(args.a, args.b)
+    if not isinstance(result, Molecule):
+        print(f"{args.a} + {args.b}: no compound forms - {result.reason}")
+        return 0
+    m = result
+    print(f"{args.a} + {args.b}  ->  {m.formula}   ({m.character.value})")
+    print("=" * 56)
+    print(f"  stoichiometry      {m.counts}")
+    print(f"  formation_energy   {m.formation_energy:.2f}  (negative = stable)")
+    print(f"  canonical_id       {m.canonical_id()}")
+    print()
+    print("  sites (index: symbol, formal charge):")
+    for i, (sym, q) in enumerate(zip(m.atoms, m.formal_charges)):
+        print(f"    [{i}] {sym}{'' if q == 0 else f' {q:+d}'}")
+    print()
+    print("  bonds:")
+    for bd in m.bonds:
+        print(f"    {m.atoms[bd.a_index]}({bd.a_index})-{m.atoms[bd.b_index]}({bd.b_index})  "
+              f"order={bd.order}  {bd.character.value}  E~{bd.energy:.1f}")
+    if m.geometry is not None:
+        g = m.geometry
+        print()
+        print(f"  geometry (central {g.central}):")
+        print(f"    steric_number    {g.steric_number}  ({g.sigma_bonds} sigma + {g.lone_pairs} lp)")
+        print(f"    hybridization    {g.hybridization}")
+        print(f"    shape            {g.shape}")
+        print(f"    bond_angle       {g.bond_angle:.1f} deg")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="chem_explorer", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -84,6 +120,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     p_inspect = sub.add_parser("inspect-atom", help="one atom's descriptors + derived chemistry")
     p_inspect.add_argument("symbol", help="element symbol, e.g. O, Cl, Fe")
     p_inspect.set_defaults(func=_cmd_inspect)
+
+    p_build = sub.add_parser("build-molecule", help="form the compound of two elements")
+    p_build.add_argument("a", help="first element symbol")
+    p_build.add_argument("b", help="second element symbol")
+    p_build.set_defaults(func=_cmd_build)
 
     args = parser.parse_args(argv)
     return args.func(args)
