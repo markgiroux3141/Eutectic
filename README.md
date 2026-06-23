@@ -293,7 +293,38 @@ engine never imports it — asserted in a test).
   performance side (today only `motor.py` has equations). Roles take one material each (no
   multi-material composites yet).
 
-### M7a findings (the band gap, revived on the chemistry crystal — and its honest scope)
+### Game shell findings (the interactive front-end — and the two physics negatives that preceded it)
+
+The game shell (spec §11 M6) ships now that the property space "feels good" (the spec's gate for
+starting it). It is a deliberately **thin terminal game** over the existing engine — the discovery,
+caching, lineage, properties, and machine performance are all the engine's; the shell adds only the
+player's loop: an inventory of discovered materials, deterministically **coined names** for alloys
+(the same combination always earns the same name — the determinism contract extended to UX), a
+**progression of goals** that auto-complete from real measured properties (gated by prerequisites
+into a light tech-tree), and **building machines** through a generic catalog over `machines/`. Saves
+are tiny and reproducible: they store the universe seed + the ordered combination list and **replay**
+it (no lattices serialized), because the engine is deterministic. `game/` imports the engine and
+machines and is never imported by them — the same one-way layering as `machines/` (so the engine
+suite stays independent). Goal thresholds are calibrated against the real ranges, not magic numbers
+(the motor baseline is iron-core/copper-coil/iron-shaft ≈ 0.116 torque; copper heat-sink conductance
+≈ 0.131 — goals ask you to *beat* them). `python -m game`; `tests/test_game.py`.
+
+**Two physics negatives chosen this round, reported not buried (no-fudge norm).** Before the game
+shell, the two remaining physics enrichments were de-risked and both came back "harder than clean":
+- **M7b (covalent semiconductors) — negative.** A covalent crystal is homonuclear, so M7a's ΔEN
+  stagger gives gap 0. A 2-orbital (IE/EA) tight-binding candidate cannot represent group-IV (the
+  sp³ orbital-count overflows a 2-orbital basis) and spuriously gaps divalent *metals* from
+  band-filling artifacts. A faithful covalent gap needs a real sp³ 4-orbital basis with
+  Slater-Koster hoppings — non-derivable dials. Deferred (as the spec already tiered it).
+- **Stress-as-condition (fracture) — soft crossover, not a transition.** Ramping strain and breaking
+  over-stretched bonds gives a *graceful* modulus decline whose location slides with the break
+  threshold (a disguised-dial smell), and the connectivity-percolation detector never coincides with
+  the modulus collapse — because the collapse is loss of *rigidity*, not connectivity. A real
+  fracture transition needs the rigidity-percolation (pebble-game) order parameter and probably
+  bond-bending forces to escape the marginally-rigid regime (the known M8 caveat). Not built on a
+  disguised-dial foundation; left as a characterized follow-up.
+
+
 
 M7 was first de-risked on the materials engine's ~0.6-fill `combine` lattices and **falsified** — the
 keystone passed (a staggered ±Δ on-site potential on a *full* periodic square lattice gives `gap = 2Δ`
@@ -448,7 +479,16 @@ M5 made `occupied` thermal and asked melting to *emerge* — pressure-tested the
       ∝ I²), **composite armor** (mechanical — *solves* the M8 strength↔ductility dilemma via a
       hard face + ductile backing). Shared coil math in `machines/_electrical.py`. See **Machine
       layer findings**; `tests/test_machines.py`.
-- [ ] Game shell follows (spec §11 M6 — inventory, crafting UI, building, progression).
+- [x] **Game shell (spec §11 M6) — the interactive front-end.** A terminal game (`game/`) on top
+      of the mature engine: **discover** materials by combining (the deterministic `combine`
+      pipeline, so alchemy is reproducible — same combination earns the same coined name every
+      time), **inspect** their measured properties, **build** machines by assigning materials to
+      roles (the machine layer computes performance), and progress through **goals** that
+      auto-complete from real measured properties and unlock via prerequisites (e.g. "discover a
+      magnet", "build a motor that beats the iron-and-copper baseline"). Saves are tiny and
+      deterministic — they replay the combination list rather than serializing lattices. The game
+      imports the engine/machines and is never imported by them (same one-way layering as
+      `machines/`). See **Game shell findings**; `python -m game`.
 
 ### Chemistry layer (chemistry-engine-spec — the layer *below* materials)
 
