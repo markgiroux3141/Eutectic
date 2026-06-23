@@ -26,7 +26,7 @@ from . import process as process_mod
 from . import thermal as thermal_mod
 from .lattice import DEFAULT_SHAPE_2D, Lattice
 from .process import Process
-from .properties import conductance, ising, mechanical, percolation, scalar
+from .properties import conductance, ising, mechanical, percolation, scalar, spectral
 from .rng import UNIVERSE_SEED, hash_str, mix
 
 if TYPE_CHECKING:  # avoid import cost / keep engine layering explicit
@@ -210,7 +210,9 @@ def measure_properties(lattice: Lattice) -> dict[str, float]:
     ``melting_temperature`` — the occupancy order-disorder point, the positional twin of Curie
     (gated by solidity for cost). M6 adds thermal conductivity; M8 adds ``strength`` (shear
     modulus) and ``ductility`` (coordination deficit) from the central-force bond network (also
-    gated by solidity). Every value is measured from the structure, never assigned.
+    gated by solidity). M7a adds ``band_gap`` — the tight-binding spectral gap, gated by an on-site
+    stagger so only ionic crystals pay the eigendecomposition. Every value is measured from the
+    structure, never assigned.
     """
     magnetism = ising.magnetism(lattice)
     solidity = percolation.largest_cluster_fraction(lattice)
@@ -229,6 +231,12 @@ def measure_properties(lattice: Lattice) -> dict[str, float]:
     # Mechanical (M8): strength (shear modulus) + ductility (coordination deficit), measured
     # from the central-force bond network, gated by solidity for cost (like melting).
     for key, value in mechanical_properties(lattice, solidity).items():
+        props[key] = quantize(value)
+    # Spectral (M7a): the tight-binding band gap, measured from the lattice's on-site potential.
+    # Cost-gated by spectral.has_onsite_stagger (eigvalsh is O(N^3)): the uniform/metallic majority
+    # carry no stagger -> band_gap = 0 (conductor) for free, exactly as the Curie/melting gates skip
+    # their sweeps. Only ionic crystals (a real ±Δ stagger) diagonalize, over a capped window.
+    for key, value in spectral.measure(lattice).items():
         props[key] = quantize(value)
     # Conducting-graph properties: one per-axis solve, several derived values (§5.3).
     # ``edge_connectivity`` is the structural input to M6 superconductivity (a redundant backbone

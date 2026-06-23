@@ -293,21 +293,48 @@ engine never imports it — asserted in a test).
   performance side (today only `motor.py` has equations). Roles take one material each (no
   multi-material composites yet).
 
-### M7 (deferred) findings (band gap falsified on our substrate — a reported negative)
+### M7a findings (the band gap, revived on the chemistry crystal — and its honest scope)
 
-M7 (spectral / band gap via `eigh`, spec §5.6) was de-risked and **deferred** — the no-fudge norm
-in action, same as the rejected Kawasaki SC fix. The keystone passed (a staggered ±Δ on-site
-potential on a *full* periodic square lattice gives `gap = 2Δ` to ~1e-14, parameter-free), and the
-honest detector is gap/level-spacing (a metal's raw HOMO-LUMO gap → 0 like 1/N). **But the killer is
-dilution:** our materials are ~0.6 fill, and a staggered potential that opens a clean gap at fill
-1.00 gives **gap = 0 already at fill 0.95** — 5% vacancies (dangling bonds → mid-gap states) close it
-and push the density-of-states at the Fermi level *above* the clean-metal value. A hard band gap is a
-property of a near-perfect crystal; a 37%-vacancy network is a defect-dominated mess (physically
-correct — cf. amorphous silicon, and silicon metallizing on melting). Both candidate metallicity→
-on-site mappings gave `gap = 0` for every element including silicon/carbon. M7 returns only on a
-substrate a gap can live on (near-full-fill 2-sublattice crystalline order and/or 3D), ideally as a
-*conditions* property (gap closing as T/P opens vacancies). M8 (mechanical) was chosen as the next
-milestone instead — the property a diluted percolation network expresses *natively*.
+M7 was first de-risked on the materials engine's ~0.6-fill `combine` lattices and **falsified** — the
+keystone passed (a staggered ±Δ on-site potential on a *full* periodic square lattice gives `gap = 2Δ`
+to ~1e-14, parameter-free), but dilution killed it: 5% vacancies (dangling bonds → mid-gap states)
+close any gap, so the diluted network is a defect-dominated mess (physically correct — amorphous Si,
+Si metallizing on melting). It was deferred, and M8 (mechanical) shipped instead.
+
+**M7a now ships on the substrate that finally fits: the chemistry layer's dense crystals.**
+`chemistry/crystal.py` emits **fill = 1.0** rock-salt crystals with cation/anion sublattices, and
+`relax()` settles only *spin* (never `occupied`/`atom_type`), so the bipartite ±Δ structure survives
+settling intact. The de-risk re-run on the *actual relaxed NaCl crystal* recovered the textbook result:
+
+- **Parameter-free keystone.** `gap = 2Δ` with `Δ ∝ ΔEN` (the cation/anion electronegativity
+  difference), to float32 field precision, **independent of the hopping `t`** (`t` sets only the
+  bandwidth). `Cu` (uniform metal, Δ=0) shows no gap. The conductor/insulator split *emerges* from the
+  bonding, never assigned.
+- **Honest detector.** Raw HOMO–LUMO gap is rejected (a metal's → 0 like 1/N); the detector is
+  `gap / level-spacing`, which **grows with N** for NaCl (17→154 over L=8→24) and stays 0 for Cu. A
+  secondary `DOS(E_F)` reads ~0 in the gap, 0.80 for the metal.
+- **ΔEN ordering.** NaBr < NaCl < KF in gap, ordered by ΔEN (the classification ladder).
+
+**Honest scope (caveats carried, not buried):**
+- **Ionic gaps only (M7a).** The 2D substrate delivers the *ionic* (on-site stagger) gap. Covalent
+  semiconductors (Si, diamond) have no ionic stagger — their gap is bonding–antibonding splitting from
+  bond alternation (SSH) or real 3D tetrahedral coordination. They read as *conductors* here and wait
+  for **M7b** (the 3D substrate). This is a deliberate scope line, not a bug.
+- **The gap is brittle — a crossover, NOT a transition.** Confirmed: the gap collapses at the *first*
+  vacancy (gap survives 0.5%, is 0 by 1%). Production crystals are fill = 1.0 by construction so the
+  stored value is safe, but the §6 "conditions" coupling (gap closing on heating as vacancies open) is
+  therefore reported as a **vacancy-brittleness crossover**, never dressed as a phase transition
+  (no-fudge norm — cf. C4 ignition, the retired SC proxy). The explorer's `spectral` view shows it.
+- **Cost-gated.** `eigvalsh` is O(N³) (~3.2 s at 64²); it runs **only** for crystals with a real
+  on-site stagger (ionic), over a capped 24² window, so the whole M0–M8 generated-material pipeline
+  pays nothing — suite time is unchanged. The stored `band_gap` is honestly *coarse* (the explorer is
+  the accurate instrument), exactly like the stored Curie/melting points.
+- **Absolute eV scale uncalibrated** (one fixed `Δ`-scale constant), like every prior layer; the
+  emergent claims are the gap's *existence*, *t-independence*, *N-scaling*, and *ΔEN ordering*.
+
+`site_potential` is the new per-cell field (the on-site potential); like `cohesion`/`metallicity` it is
+a derived field **excluded from `structural_signature`**, so M0–M8 stay byte-identical. Explore it with
+`python -m tools.chem_explorer spectral Na Cl` (or any element/binary).
 
 ### M5 findings (crystalline melting falls out, and its honest scope)
 
@@ -395,10 +422,15 @@ M5 made `occupied` thermal and asked melting to *emerge* — pressure-tested the
       Laplacian), **ductility** = the coordination deficit (the density of slip-enabling
       under-coordinated sites). The strength↔ductility anti-correlation *falls out* (spec §5.7);
       both are stored, gated by solidity. See **M8 findings**; `python -m tools.explorer mechanical`.
-- [~] **M7 — Spectral (band gap)** — **deferred** (de-risked and falsified on our ~0.6-fill
-      substrate: a hard band gap needs a near-perfect crystal, and 5% vacancies close it
-      completely). Returns later on a crystalline/3D substrate or as a conditions-driven property.
-      See **M7 (deferred) findings**.
+- [x] **M7a — Spectral (band gap)** — **done**, revived on the chemistry layer's dense (fill=1.0)
+      rock-salt crystals (the substrate the first attempt lacked). A tight-binding Hamiltonian
+      (`-t` on periodic NN bonds, a per-cell `site_potential` on the diagonal) is diagonalized; the
+      ionic gap `= 2Δ` with `Δ ∝ ΔEN` *emerges* parameter-free and `t`-independent, so NaCl is an
+      insulator and Cu a conductor. New per-cell `site_potential` field (excluded from the signature),
+      `engine/properties/spectral.py`, gated `band_gap` in `measure_properties` (only ionic crystals
+      pay the O(N³) solve). The gap is honestly brittle to vacancies (a crossover, not a transition),
+      and covalent semiconductors (Si/diamond) await **M7b** (3D). See **M7a findings**;
+      `python -m tools.chem_explorer spectral Na Cl`.
 - [x] **Machine layer — the electric-motor worked example (spec §8).** The payoff loop: a
       machine is an *assembly* of **roles** (`machines/roles.py`: a thin `Role`/`Requirement`/
       `Blueprint` framework), and **performance is computed from the assigned materials' measured
@@ -467,8 +499,8 @@ engine measures it"). See `chemistry-engine-spec.md`.
       and cohesion (many-body) anti-correlates. So `engine/elements.py` is **untouched** (authored
       affinities kept as reference data) → **M0–M8 stay byte-identical green**; chemistry-derived
       fields apply only to new compounds. See `tests/test_crystal_properties.py`; `python -m
-      tools.chem_explorer measure-compound Na Cl`. (M7 band-gap revival deferred — needs a 3D
-      network substrate.)
+      tools.chem_explorer measure-compound Na Cl`. (This dense crystal is also what revived
+      **M7a** — the ionic band gap now measures off its rock-salt sublattices; see **M7a findings**.)
 - [x] **C3 — Reaction thermodynamics** (`chemistry/reaction.py`, `chemistry/conditions.py`).
       Feasibility *measured* from energetics: **ΔH** by Hess's law over the C1 bond energies
       (`Σ E(broken) − Σ E(formed)`); **ΔS** from a distilled phase-entropy estimate (gas ≫ liquid >

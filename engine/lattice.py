@@ -147,13 +147,23 @@ class Lattice:
     Frozen so a Lattice is a value object; transforms return new instances. Arrays are
     not deep-copied on construction — callers should not mutate arrays they hand in.
 
-    NB: ``cohesion`` and ``metallicity`` are intentionally **excluded from**
-    :meth:`structural_signature`. The signature seeds combination/measurement RNG, and both are
-    *always* a deterministic function of fields already hashed (an element's ``bond_energy`` /
-    ``conduction_tendency`` — which already shape ``occupied``/``atom_type`` — and the parents'
-    fields + merge mask for a combination), so they add no independent entropy; excluding them
-    keeps every M0–M4 seed and stored value byte-identical. Measurements that *use* them
-    (melting) fold the relevant field hash into their own seed.
+    * ``site_potential`` — float32, per-cell **on-site electronic potential** (the source of the
+      band gap, M7). A tight-binding Hamiltonian places this on its diagonal; a *staggered*
+      potential on a 2-sublattice (ionic) crystal opens a gap ``= 2Δ`` (Δ the stagger amplitude),
+      while a *uniform* (zero, or constant) potential opens none — so a charge-staggered rock-salt
+      lattice is an insulator and a uniform metallic one a conductor. Chemistry sets it from
+      species electronegativity (``Δ ∝ χ_site − χ̄``); a generated/metallic lattice leaves it 0
+      (no ionic gap → conductor, the already-validated behaviour). Optional; defaults to **zeros**
+      (no stagger), so every pre-M7 lattice is byte-identical and gap-free.
+
+    NB: ``cohesion``, ``metallicity`` and ``site_potential`` are intentionally **excluded from**
+    :meth:`structural_signature`. The signature seeds combination/measurement RNG, and all three
+    are *always* a deterministic function of fields already hashed (an element's ``bond_energy`` /
+    ``conduction_tendency`` / species electronegativity — which already shape ``occupied`` /
+    ``atom_type`` — and the parents' fields + merge mask for a combination), so they add no
+    independent entropy; excluding them keeps every M0–M8 seed and stored value byte-identical.
+    The spectral measurement that *uses* ``site_potential`` is itself deterministic (``eigvalsh``,
+    no RNG), so it needs no seed of its own.
     """
 
     occupied: np.ndarray
@@ -163,6 +173,7 @@ class Lattice:
     moment: np.ndarray | None = None
     cohesion: np.ndarray | None = None
     metallicity: np.ndarray | None = None
+    site_potential: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         if self.mass is None:
@@ -182,6 +193,12 @@ class Lattice:
                 self, "metallicity",
                 np.full(self.occupied.shape, np.float32(DEFAULT_METALLICITY)),
             )
+        if self.site_potential is None:
+            # Backward-compatible default: zero on-site potential everywhere (no stagger -> no
+            # band gap -> conductor). Every pre-M7 lattice takes this path and stays gap-free.
+            object.__setattr__(
+                self, "site_potential", np.zeros(self.occupied.shape, dtype=np.float32),
+            )
         shapes = {
             self.occupied.shape,
             self.atom_type.shape,
@@ -190,6 +207,7 @@ class Lattice:
             self.moment.shape,
             self.cohesion.shape,
             self.metallicity.shape,
+            self.site_potential.shape,
         }
         if len(shapes) != 1:
             raise ValueError(f"lattice arrays disagree on shape: {shapes}")
@@ -237,6 +255,7 @@ class Lattice:
             moment=self.moment.copy(),
             cohesion=self.cohesion.copy(),
             metallicity=self.metallicity.copy(),
+            site_potential=self.site_potential.copy(),
         )
 
 
@@ -375,9 +394,11 @@ def merge(
     moment = np.where(take_a, a.moment, b.moment).astype(np.float32)
     cohesion = np.where(take_a, a.cohesion, b.cohesion).astype(np.float32)
     metallicity = np.where(take_a, a.metallicity, b.metallicity).astype(np.float32)
+    site_potential = np.where(take_a, a.site_potential, b.site_potential).astype(np.float32)
     return Lattice(
         occupied=occupied, atom_type=atom_type, spin=spin,
         mass=mass, moment=moment, cohesion=cohesion, metallicity=metallicity,
+        site_potential=site_potential,
     )
 
 
@@ -591,4 +612,5 @@ def relax(
         moment=lattice.moment,
         cohesion=lattice.cohesion,
         metallicity=lattice.metallicity,
+        site_potential=lattice.site_potential,
     )

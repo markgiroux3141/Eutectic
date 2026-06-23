@@ -170,6 +170,81 @@ def _cmd_measure(args: argparse.Namespace) -> int:
     return 0
 
 
+def _spectral_crystal(args, shape):
+    """Build the (element or compound) crystal for the spectral view, or None with a message."""
+    if args.b is None:
+        try:
+            return crystal.element_crystal(args.a, shape=shape), args.a
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return None, None
+    m = molecule.form_binary(args.a, args.b)
+    if not isinstance(m, Molecule):
+        print(f"{args.a} + {args.b}: no compound forms - {m.reason}")
+        return None, None
+    return crystal.compound_crystal(m, shape=shape), m.formula
+
+
+def _cmd_spectral(args: argparse.Namespace) -> int:
+    """M7a: the tight-binding band gap measured off the crystal's on-site potential.
+
+    Shows the headline gap + classification, the finite-size HONEST detector (gap/spacing grows
+    with N for an insulator, stays O(1) for a metal), and the vacancy-BRITTLENESS crossover (the
+    gap collapses at the first vacancy — a crossover, NOT a phase transition; no-fudge norm).
+    """
+    import numpy as np
+
+    from engine.lattice import relax
+    from engine.properties import spectral
+
+    lat, label = _spectral_crystal(args, shape=(args.size, args.size))
+    if lat is None:
+        return 2
+    settled = relax(lat, seed=0xC2)
+
+    gap = spectral.band_gap(settled)
+    raw = spectral.raw_gap(settled)
+    norm = spectral.normalized_gap(settled)
+    dos = spectral.dos_at_fermi(settled)
+    cls = spectral.classify(settled)
+
+    print(f"spectral / band gap: {label}   (window {min(args.size, spectral.SPECTRAL_WINDOW)}^2)")
+    print("=" * 60)
+    print(f"  band_gap (stored)     {gap:.4f}   [0 unless an N-robust gap exists]")
+    print(f"  raw HOMO-LUMO gap     {raw:.4f}")
+    print(f"  normalized gap        {norm:.2f}   (gap / mean level spacing)")
+    print(f"  DOS at E_F            {dos:.4f}   (~0 in a gap, finite in a metal)")
+    print(f"  classification        {cls}")
+    print(f"  on-site stagger?      {spectral.has_onsite_stagger(settled)}")
+
+    print("\n  FINITE-SIZE DETECTOR (the honest test: raw gap alone is misleading)")
+    print("    a true gap is N-independent; the level spacing ~ bandwidth/N, so")
+    print("    gap/spacing GROWS with N for an insulator, stays O(1) for a metal.")
+    for L in (8, 12, 16, 24):
+        sub, _ = _spectral_crystal(args, shape=(L, L))
+        sub = relax(sub, seed=0xC2)
+        print(f"    L={L:>3} (N={L*L:>4}): raw_gap={spectral.raw_gap(sub):.4f}  "
+              f"gap/spacing={spectral.normalized_gap(sub):8.2f}")
+
+    if spectral.has_onsite_stagger(settled):
+        print("\n  VACANCY BRITTLENESS (the original M7 killer; a CROSSOVER, not a transition)")
+        print("    punch random vacancies into the dense crystal; the gap collapses at the")
+        print("    FIRST dangling site (a mid-gap state) -- physically correct (amorphous Si).")
+        rng = np.random.default_rng(7)
+        base_occ = settled.occupied.copy()
+        for vac in (0.0, 0.005, 0.01, 0.02, 0.05):
+            occ = base_occ.copy()
+            if vac > 0:
+                occ[rng.random(occ.shape) < vac] = 0
+            punched = settled.copy()
+            punched.occupied[:] = occ
+            print(f"    vacancies={vac:>5.1%}: fill={occ.mean():.3f}  "
+                  f"raw_gap={spectral.raw_gap(punched):.4f}  class={spectral.classify(punched)}")
+        print("    (production crystals are fill=1.0 by construction -> the stored gap is safe;")
+        print("     this is the conditions-coupling story, reported honestly as brittleness.)")
+    return 0
+
+
 def _parse_species(token: str):
     """Parse one species token into a :class:`chemistry.reaction.Species`.
 
@@ -473,6 +548,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     p_meas.add_argument("a", help="element symbol (single -> element crystal)")
     p_meas.add_argument("b", nargs="?", default=None, help="optional second element (binary compound)")
     p_meas.set_defaults(func=_cmd_measure)
+
+    p_spec = sub.add_parser("spectral",
+                            help="M7a: tight-binding band gap + honest finite-size detector")
+    p_spec.add_argument("a", help="element symbol (single -> element crystal)")
+    p_spec.add_argument("b", nargs="?", default=None, help="optional second element (binary compound)")
+    p_spec.add_argument("--size", "-s", type=int, default=24, help="lattice side for the headline (default 24)")
+    p_spec.set_defaults(func=_cmd_spectral)
 
     p_react = sub.add_parser("react", help="a reaction's thermodynamics at given conditions")
     p_react.add_argument("reaction", help='e.g. "2 H + O = 2 H.O"  (H->H2, H.O->H2O, ~O->atom)')

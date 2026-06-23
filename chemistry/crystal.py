@@ -20,6 +20,10 @@ Per-cell fields, all sourced from chemistry (spec §9):
   Fe's 4 unpaired → high moment → magnetic; Cu's 1 → low → not (spec §9, M3/M4).
 * **cohesion** — from bond strength (drives melting M5, strength M8, phonon κ M6b).
 * **mass** — from atomic masses (drives density M2, phonon κ).
+* **site_potential** — from species **electronegativity** (ionic only): a ``±Δ`` stagger on the
+  cation/anion sublattices, ``Δ ∝ ΔEN``. This is what makes NaCl an *insulator* with a real band
+  gap (= 2Δ) and a uniform metal a *conductor* with none — the spectral M7a property. Uniform
+  (element/metallic/covalent) crystals leave it 0 (no ionic gap; covalent gaps await M7b).
 
 **Affinity-derivation finding (the make-or-break, reported not buried — spec §2, §20).** We
 de-risked deriving the *existing elements'* authored affinities from these descriptors. Result:
@@ -55,6 +59,13 @@ _UNPAIRED_REFERENCE: float = 5.0
 # at C2 (cross-character bond energies are not yet calibrated — see chemistry.bonding); it only
 # needs a sensible monotone ordering, e.g. diamond (stiff C network) above the soft metals.
 _COHESION_ENERGY_SCALE: float = 200.0
+# Electronegativity -> on-site potential scale (M7, the band gap). A site's potential is
+# ``scale·(χ_site − χ̄)``; on a 1:1 ionic checkerboard this is a ``±scale·ΔEN/2`` stagger, opening a
+# tight-binding gap ``= 2Δ = scale·ΔEN``. ONE fixed constant: it sets only the absolute (uncalibrated)
+# eV scale, never the ordering or the conductor/insulator split — the same "one calibrated constant"
+# stance as the C1 bond energy and C3 entropy units (see engine.properties.spectral). scale=1 →
+# gap ≈ ΔEN (Pauling units), e.g. NaCl ≈ 2.23.
+_EN_POTENTIAL_SCALE: float = 1.0
 
 
 def _clamp01(x: float) -> float:
@@ -83,10 +94,16 @@ def _metallicity_for(character: BondCharacter) -> float:
     return 1.0 if character is BondCharacter.METALLIC else 0.0
 
 
-def _dense(shape, atom_type, metallicity, moment, mass, cohesion) -> Lattice:
-    """Assemble a fully-occupied (dense crystal) lattice from prebuilt per-cell arrays."""
+def _dense(shape, atom_type, metallicity, moment, mass, cohesion, site_potential=None) -> Lattice:
+    """Assemble a fully-occupied (dense crystal) lattice from prebuilt per-cell arrays.
+
+    ``site_potential`` (M7) defaults to ``None`` → zeros (no stagger → no band gap → conductor),
+    which is the correct behaviour for a uniform element/metallic/covalent crystal. Only the ionic
+    crystal supplies a real staggered potential (see :func:`_ionic_crystal`).
+    """
     occ = np.ones(shape, dtype=np.uint8)
     spin = np.ones(shape, dtype=np.int8)   # relax() settles these; pinned +1 is a fine start
+    pot = None if site_potential is None else np.asarray(site_potential, dtype=np.float32)
     return Lattice(
         occupied=occ,
         atom_type=np.asarray(atom_type, dtype=np.int8),
@@ -95,6 +112,7 @@ def _dense(shape, atom_type, metallicity, moment, mass, cohesion) -> Lattice:
         moment=np.asarray(moment, dtype=np.float32),
         cohesion=np.asarray(cohesion, dtype=np.float32),
         metallicity=np.asarray(metallicity, dtype=np.float32),
+        site_potential=pot,
     )
 
 
@@ -184,4 +202,10 @@ def _ionic_crystal(molecule: Molecule, shape) -> Lattice:
     m_an = _moment_from_unpaired(anion.z, q_an)
     moment = np.where(is_cation, m_cat, m_an).astype(np.float32)
     cohesion = np.full(shape, COH_HI, dtype=np.float32)         # ionic crystals are hard
-    return _dense(shape, atom_type, metallicity, moment, mass, cohesion)
+    # On-site potential (M7, the band gap): a per-sublattice stagger from electronegativity. The
+    # electron localizes on the more electronegative anion → a real ionic gap. χ̄ is the cell mean
+    # (count-weighted via the sublattice pattern), so a uniform lattice would give 0 — the gap is
+    # set purely by ΔEN. χ for an ion is its parent atom's Pauling EN (ionic formers are not noble).
+    chi = np.where(is_cation, cation.electronegativity, anion.electronegativity).astype(np.float64)
+    site_potential = (_EN_POTENTIAL_SCALE * (chi - chi.mean())).astype(np.float32)
+    return _dense(shape, atom_type, metallicity, moment, mass, cohesion, site_potential)
